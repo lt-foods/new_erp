@@ -58,6 +58,11 @@ const slatePrediction = (s: Slate): Prediction | null => {
   return Array.isArray(p) ? (p[0] ?? null) : p;
 };
 const CONF_LABEL: Record<Prediction["confidence"], string> = { high: "信心高", mid: "信心中", low: "信心低" };
+const CONF_TAG: Record<Prediction["confidence"], string> = {
+  high: "bg-emerald-100 text-emerald-700 ring-emerald-300 dark:bg-emerald-900/40 dark:text-emerald-300 dark:ring-emerald-800",
+  mid: "bg-sky-100 text-sky-700 ring-sky-300 dark:bg-sky-900/40 dark:text-sky-300 dark:ring-sky-800",
+  low: "bg-zinc-100 text-zinc-600 ring-zinc-300 dark:bg-zinc-800 dark:text-zinc-300 dark:ring-zinc-700",
+};
 
 const ACTION_LABEL: Record<string, string> = {
   none: "未處理",
@@ -636,8 +641,18 @@ function SlateCard({
             className="line-clamp-2 font-medium leading-snug hover:underline">
         {name}
       </Link>
-      <div className="text-[11px] text-zinc-600 dark:text-zinc-300">
-        約 {p?.buyers ?? sl.predicted} 位{p ? `（${p.low}～${p.high}）・${CONF_LABEL[p.confidence]}` : ""}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="inline-flex items-baseline gap-0.5 rounded-md bg-violet-600 px-2 py-0.5 text-white dark:bg-violet-500">
+          <span className="text-[10px]">約</span>
+          <span className="text-base font-bold leading-tight">{p?.buyers ?? sl.predicted}</span>
+          <span className="text-[10px]">位</span>
+        </span>
+        {p && (
+          <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ${CONF_TAG[p.confidence]}`}>
+            {CONF_LABEL[p.confidence]}
+          </span>
+        )}
+        {p && <span className="text-[10px] text-zinc-400">{p.low}～{p.high} 位</span>}
       </div>
       {(p?.reasons[0] ?? sl.reason) && (
         <div className="line-clamp-2 text-[10px] text-zinc-500 dark:text-zinc-400">{p?.reasons[0] ?? sl.reason}</div>
