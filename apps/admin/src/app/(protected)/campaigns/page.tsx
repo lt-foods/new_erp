@@ -188,7 +188,11 @@ function RecoChips({ reco, status }: { reco: CampaignReco | undefined; status: S
       {reco.buyers != null && (
         <span className="inline-flex items-center gap-1 text-[11px] text-zinc-500" title={(reco.reasons ?? []).join("\n")}>
           <span className="font-bold text-zinc-800 dark:text-zinc-100">預估約 {reco.buyers} 位</span>
-          {showRange && <span>（{reco.low}～{reco.high} 位）</span>}
+          {showRange && (
+            <span className="whitespace-nowrap" title={`最少約 ${reco.low} 位、最多約 ${reco.high} 位`}>
+              ⌄{reco.low} ⌃{reco.high}
+            </span>
+          )}
           {reco.confidence && (
             <span className={`rounded px-1.5 py-0.5 text-[10px] ${RECO_CONF_TAG[reco.confidence]}`}>{RECO_CONF_LABEL[reco.confidence]}</span>
           )}
