@@ -55,11 +55,11 @@ type SupplierParsed = {
   supplier: string | null; comment_count: number | null; matches: SupplierMatch[] | null;
 };
 
-/** 廠商報價＋「我們賣過嗎」：二字詞比對 ≥ 0.75 算賣過，0.5～0.75 只標可能相似 */
+/** 廠商報價＋「我們賣過嗎」：向量相似度 ≥ 0.8 才算賣過（20261101000110），其餘對到的標「類似」 */
 function SupplierInfo({ p }: { p: SupplierParsed | null }) {
   if (!p) return null;
   const m = p.matches?.[0];
-  const sold = m && m.score >= 0.75;
+  const sold = m && m.score >= 0.8;
   if (p.pending) {
     return (
       <div className="mt-1 text-[11px] font-normal text-zinc-500 dark:text-zinc-400">
@@ -84,8 +84,8 @@ function SupplierInfo({ p }: { p: SupplierParsed | null }) {
           </>
         ) : m ? (
           <>
-            <span className="mr-1 rounded bg-zinc-100 px-1 text-[10px] dark:bg-zinc-800">可能相似</span>
-            {m.name.slice(0, 24)}（{m.buyers} 人）
+            <span className="mr-1 rounded bg-zinc-100 px-1 text-[10px] dark:bg-zinc-800">類似</span>
+            {m.name.slice(0, 24)}（{m.campaigns} 團・{m.buyers} 人）
           </>
         ) : (
           <span className="rounded bg-amber-100 px-1 text-[10px] text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">沒賣過</span>
