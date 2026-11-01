@@ -41,7 +41,7 @@
 | 開團 / 採購 / 收貨單「預計到貨日」 | 全部 0% 填 | 算不出準時率 |
 | `brand_id` | 877 填（8 月是 0） | 再累積幾個月可當特徵 |
 | `pg_cron` / `pg_net` | 已啟用 | 沿用 `line-note-tick` 模式 |
-| LLM / embedding 呼叫 | 無 | 新開一支 Edge Function |
+| LLM 呼叫 | 無 | 用 Claude Code 排程任務（訂閱），不開 API 帳戶 |
 
 ---
 
@@ -69,7 +69,7 @@ LINE 社群機器人              去重（已賣過？）        × 擁擠度 �
 直接字串比對抓不到。原本規劃用向量，老闆決定**不加其他服務**（向量要另一家的 embedding API），
 改成只用既有的 Claude API + Supabase：
 
-1. **Claude 正規化**：每筆外部商品丟給 Claude（`product-tag` 同一套），回「標準繁中品名
+1. **Claude 正規化**：每筆外部商品交給 Claude Code 排程任務（跟商品自動貼標同一套），回「標準繁中品名
    （去掉行銷字、英文翻中、簡轉繁）＋ 標籤」。例：「Shine Muscat 晴王葡萄 2kg」→「麝香葡萄 晴王」＋ fruit。
 2. **SQL 二字詞比對**：正規化品名切成二字詞，算在我方商品名裡命中的比例，同標籤優先，取前 20 個候選。
 3. **Claude 挑最像的**（選用）：前 20 個候選再丟回 Claude 選出真正同款／同類的 5 個、判斷「是否已賣過」。
@@ -168,7 +168,7 @@ LINE 社群機器人              去重（已賣過？）        × 擁擠度 �
 ### Phase B — 進料與媒合（2 週）
 
 - `market_products`、`supplier_catalog_items` 兩張表 + Excel 上傳頁（欄位照實際匯出檔定）。
-- 上傳後由 Edge Function 批次送 Claude 正規化（標準品名＋標籤），寫回 `norm_name`、`tags`。
+- 上傳後由 Claude Code 排程任務（同「商品自動貼標」，用訂閱、不需 API key）批次正規化（標準品名＋標籤），寫回 `norm_name`、`tags`。
 - `rpc_match_external_product(id)`：§2.1 的二字詞比對取前 20 候選（同標籤優先），
   回最像的 5 個已賣商品（含當時滲透率）與「是否已賣過」；需要時再請 Claude 從 20 個裡挑。
 - 驗收：拿最近 3 個月的候選池，人工抽 50 筆看「最像商品」對不對，命中 ≥ 80% 才上線。
