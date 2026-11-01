@@ -64,7 +64,7 @@ function SupplierInfo({ p }: { p: SupplierParsed | null }) {
     return (
       <div className="mt-1 text-[11px] font-normal text-zinc-500 dark:text-zinc-400">
         <span className="mr-1 rounded bg-sky-100 px-1 text-[10px] text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">待整理</span>
-        {p.price != null && `廠商價約 $${Number(p.price).toLocaleString("zh-TW")}・`}今晚 02:53 由 Claude 拆成品項、比對賣過沒
+        {p.price != null && `廠商價約 $${Number(p.price).toLocaleString("zh-TW")}・`}品名是暫定的（抓貼文第一行），半夜 Claude 看完圖文會整理成正式品名、價格，並標出我們有沒有賣過
       </div>
     );
   }

@@ -1420,9 +1420,11 @@ async function jobPromo(job: any) {
 function noteMedia(raw: any): unknown[] {
   const m = raw?.contents?.media;
   if (!Array.isArray(m)) return [];
-  return m.slice(0, 20).map((x: any) => ({
-    objectId: x?.objectId ?? null, type: x?.type ?? null, obsNamespace: x?.obsNamespace ?? null, serviceCode: x?.serviceCode ?? null,
-  }));
+  // 整個物件留著（LINE 回的欄位不固定，下載圖片要用到的可能藏在別的欄位），太大的截掉
+  return m.slice(0, 20).map((x: any) => {
+    const json = JSON.stringify(x ?? {});
+    return json.length <= 2000 ? x : { objectId: x?.objectId ?? null, type: x?.type ?? null, obsNamespace: x?.obsNamespace ?? null, _truncated: json.slice(0, 2000) };
+  });
 }
 async function jobCrawl(job: any) {
   const rows = await rest(`line_note_communities?id=eq.${Number(job.community_id)}&select=id,home_id,home_name,crawl_enabled,crawl_days`);
@@ -1463,7 +1465,9 @@ async function fetchMarketPostImages(client: any, communityId: number, until: nu
     for (let i = 0; i < photos.length; i++) {
       if (Date.now() > until) break;
       try {
-        const img = await downloadNoteImage(client, String(photos[i].objectId), VERBOSE);
+        const img = await downloadNoteImage(client, {
+          objectId: String(photos[i].objectId), serviceName: photos[i].serviceName, obsNamespace: photos[i].obsNamespace,
+        }, VERBOSE);
         route = img.route;
         const ext = img.type === "image/png" ? "png" : img.type === "image/webp" ? "webp" : "jpg";
         const path = `supplier-notes/${communityId}/${p.id}/${i}.${ext}`;
