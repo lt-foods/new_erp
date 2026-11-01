@@ -46,6 +46,8 @@ type Slate = {
   rank: number;
   predicted: number;
   reason: string | null;
+  /** exploit = 照預估排；explore = 新嘗試（類別勝率抽樣抽中的，20261101000190） */
+  pick_kind: "exploit" | "explore";
   candidate: {
     id: number;
     product_name_hint: string | null;
@@ -135,7 +137,7 @@ export default function CommunityCandidatesCalendarPage() {
     const { data: sl } = await getSupabase()
       .from("reco_slates")
       .select(
-        "id, slate_date, rank, predicted, reason, candidate:community_product_candidates(id, product_name_hint, raw_text, reco_predictions(buyers, low, high, confidence, reasons))"
+        "id, slate_date, rank, predicted, reason, pick_kind, candidate:community_product_candidates(id, product_name_hint, raw_text, reco_predictions(buyers, low, high, confidence, reasons))"
       )
       .eq("status", "suggested")
       .gte("slate_date", startStr)
@@ -389,7 +391,7 @@ export default function CommunityCandidatesCalendarPage() {
         <div>
           <h1 className="text-xl font-semibold">選品週曆</h1>
           <p className="mt-0.5 text-sm text-zinc-500">
-            未來 7 天 · 拖拉卡片排序或換日 · 虛線卡是系統預選（依預估買家，同款還沒結束的不推），按「排入」才會排程
+            未來 7 天 · 拖拉卡片排序或換日 · 虛線卡是系統預選（每天 8 個依預估買家、2 個「新嘗試」；同款還沒結束的不推），按「排入」才會排程
           </p>
         </div>
         <div className="flex shrink-0 gap-2">
@@ -633,10 +635,21 @@ function SlateCard({
   onSkip: (sl: Slate) => void;
 }) {
   const p = slatePrediction(sl);
+  const explore = sl.pick_kind === "explore";
+  // 新嘗試的理由放類別勝率（「零食餅乾近 4 個月 133 團、87 團賣贏中位數」），照預估的放最像的商品
+  const why = explore ? sl.reason : (p?.reasons[0] ?? sl.reason);
   return (
     <div className="flex flex-col gap-1 rounded-md border border-dashed border-violet-300 bg-violet-50/60 p-2 text-xs dark:border-violet-800 dark:bg-violet-950/20"
          title={p?.reasons.join("\n") ?? sl.reason ?? ""}>
-      <span className="text-[10px] font-semibold text-violet-600 dark:text-violet-300">系統預選</span>
+      <div className="flex items-center gap-1">
+        <span className="text-[10px] font-semibold text-violet-600 dark:text-violet-300">系統預選</span>
+        {explore && (
+          <span className="inline-flex rounded bg-rose-50 px-1.5 py-0.5 text-[10px] text-rose-600 dark:bg-rose-950/40 dark:text-rose-300"
+                title="這類商品最近開得少、還看不出準不準，系統挑一個出來試試看；賣得好以後這類就會多推">
+            新嘗試
+          </span>
+        )}
+      </div>
       <Link href={`/community-candidates?highlight=${sl.candidate?.id ?? ""}`}
             className="line-clamp-2 font-medium leading-snug hover:underline">
         {name}
@@ -650,8 +663,8 @@ function SlateCard({
         )}
         {p && <span className="text-[10px] text-zinc-400">{p.low}～{p.high} 位</span>}
       </div>
-      {(p?.reasons[0] ?? sl.reason) && (
-        <div className="line-clamp-2 text-[10px] text-zinc-500 dark:text-zinc-400">{p?.reasons[0] ?? sl.reason}</div>
+      {why && (
+        <div className="line-clamp-2 text-[10px] text-zinc-500 dark:text-zinc-400">{why.replace(/^試新：/, "")}</div>
       )}
       <div className="flex gap-1 pt-0.5">
         <SpinButton

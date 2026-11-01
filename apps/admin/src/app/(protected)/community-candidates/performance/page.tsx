@@ -12,7 +12,7 @@ import SpinButton from "@/components/SpinButton";
 
 type EvalRun = {
   id: number;
-  kind: "backtest" | "live";
+  kind: "backtest" | "live" | "daily";
   model_version: string;
   window_from: string | null;
   window_to: string | null;
@@ -95,6 +95,9 @@ export default function RecoPerformancePage() {
     }, {}),
   ).sort((a, b) => String(b.window_from).localeCompare(String(a.window_from)));
   const latestBt = backtests[0] ?? null;
+  // 每日回測（昨天關團的團）：最近 14 天
+  const dailies = (runs ?? []).filter((x) => x.kind === "daily")
+    .sort((a, b) => String(b.window_from).localeCompare(String(a.window_from))).slice(0, 14);
   const live = (runs ?? []).find((x) => x.kind === "live") ?? null;
   const sl = live?.details?.slates;
 
@@ -153,9 +156,47 @@ export default function RecoPerformancePage() {
             </div>
           </div>
 
+          {/* 每日回測 */}
+          <section className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200 px-4 py-2.5 text-sm dark:border-zinc-800">
+              <span className="font-medium">每日回測（昨天關團的團）</span>
+              <span className="text-xs text-zinc-500">每天 23:53 跑；比的是關團時的買家數，第一次開的商品才算</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full whitespace-nowrap text-sm">
+                <thead className="bg-zinc-50 text-xs text-zinc-500 dark:bg-zinc-900 dark:text-zinc-400">
+                  <tr>
+                    <th className="px-3 py-2 text-left font-medium">關團日</th>
+                    <th className="px-3 py-2 text-right font-medium">團數</th>
+                    <th className="px-3 py-2 text-right font-medium">排名相關</th>
+                    <th className="px-3 py-2 text-right font-medium">誤差中位數</th>
+                    <th className="px-3 py-2 text-right font-medium">落在區間</th>
+                    <th className="px-3 py-2 text-right font-medium">實際÷預估</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dailies.length === 0 ? (
+                    <tr><td colSpan={6} className="px-3 py-6 text-center text-zinc-400">還沒有每日回測</td></tr>
+                  ) : dailies.map((b) => (
+                    <tr key={b.id} className="border-t border-zinc-100 dark:border-zinc-800">
+                      <td className="px-3 py-2">{md(b.window_from)}</td>
+                      <td className="px-3 py-2 text-right">{b.n}</td>
+                      <td className="px-3 py-2 text-right">
+                        {b.n < 10 ? <span className="text-xs text-zinc-400">團太少</span> : <RhoLight rho={b.rho} />}
+                      </td>
+                      <td className="px-3 py-2 text-right">{b.n && b.median_ae != null ? `${n1(b.median_ae)} 位` : "—"}</td>
+                      <td className="px-3 py-2 text-right">{b.n ? pct(b.coverage) : "—"}</td>
+                      <td className="px-3 py-2 text-right">{b.n ? n1(b.ratio_median) : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
           {/* 每週回測 */}
           <section className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-            <div className="border-b border-zinc-200 px-4 py-2.5 text-sm font-medium dark:border-zinc-800">每週回測</div>
+            <div className="border-b border-zinc-200 px-4 py-2.5 text-sm font-medium dark:border-zinc-800">每週回測（3～4 週前開、已到貨結束的團）</div>
             <div className="overflow-x-auto">
               <table className="w-full whitespace-nowrap text-sm">
                 <thead className="bg-zinc-50 text-xs text-zinc-500 dark:bg-zinc-900 dark:text-zinc-400">
