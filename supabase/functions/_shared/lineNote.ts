@@ -44,11 +44,31 @@ export type CredentialSink = (patch: Partial<LineCredential>) => void;
  */
 export class PersistingStorage extends MemoryStorage {
   onCredential: CredentialSink | null = null;
+  /** E2EE 金鑰有變（登入時 LINE 交過來、或 linejs 自己找回來）就通知我，整包給 */
+  onE2EE: ((keys: Record<string, string>) => void) | null = null;
+  /** 目前手上的 e2eeKeys:*（讀加密群組聊天要用，20261101000150） */
+  e2ee: Record<string, string> = {};
   /** 登入時我們自己餵進去的值，回音不用再存一次 */
   seeded: Record<string, unknown> = {};
 
+  /** 把 DB 裡存的金鑰塞回來（不觸發 onE2EE） */
+  async seedE2EE(keys: Record<string, unknown> | null | undefined) {
+    for (const [k, v] of Object.entries(keys ?? {})) {
+      if (!k.startsWith("e2eeKeys:") || typeof v !== "string") continue;
+      this.e2ee[k] = v;
+      await super.set(k, v);
+    }
+  }
+
   override async set(key: string, value: any): Promise<void> {
     await super.set(key, value);
+    if (key.startsWith("e2eeKeys:") && typeof value === "string") {
+      if (this.e2ee[key] !== value) {
+        this.e2ee[key] = value;
+        this.onE2EE?.({ ...this.e2ee });
+      }
+      return;
+    }
     if (this.seeded[key] === value) return;
     if (key === "refreshToken" && typeof value === "string" && value) this.onCredential?.({ refreshToken: value });
     else if (key === "expire" && typeof value === "number") this.onCredential?.({ expire: value });
@@ -120,7 +140,10 @@ export function retryingFetch(_verbose = false) {
 
 export async function clientFromToken(
   cred: string | LineCredential,
-  opts: { device?: string; onCredential?: CredentialSink; verbose?: boolean } = {},
+  opts: {
+    device?: string; onCredential?: CredentialSink; verbose?: boolean;
+    e2eeKeys?: Record<string, unknown> | null; onE2EE?: (keys: Record<string, string>) => void;
+  } = {},
 ): Promise<any> {
   const c: LineCredential = typeof cred === "string" ? { accessToken: cred } : cred;
   if (!c.accessToken) throw new Error("沒有登入 token");
@@ -128,6 +151,8 @@ export async function clientFromToken(
   const storage = new PersistingStorage();
   storage.seeded = { refreshToken: c.refreshToken ?? undefined, expire: c.expire ?? undefined };
   storage.onCredential = opts.onCredential ?? null;
+  await storage.seedE2EE(opts.e2eeKeys);
+  storage.onE2EE = opts.onE2EE ?? null;
 
   const client = await loginWithAuthToken({
     accessToken: c.accessToken,
@@ -156,11 +181,123 @@ export async function loginByQr(opts: {
 }): Promise<any> {
   const login = loginWithQR(
     { onReceiveQRUrl: opts.onQr, onPincodeRequest: opts.onPin },
-    { device: opts.device ?? DEFAULT_DEVICE, storage: new MemoryStorage(), fetch: retryingFetch() },
+    // PersistingStorage：登入時 LINE 交過來的 E2EE 私鑰會留在 storage.e2ee，呼叫端用 readE2EEKeys 撿走存 DB
+    { device: opts.device ?? DEFAULT_DEVICE, storage: new PersistingStorage(), fetch: retryingFetch() },
   );
   const timeout = new Promise<never>((_, reject) =>
     setTimeout(() => reject(new Error("等太久沒掃 QR，請回後台再按一次「登入」")), opts.deadlineMs));
   return await Promise.race([login, timeout]);
+}
+
+/** client 手上的 E2EE 金鑰（沒有就回空物件） */
+export function readE2EEKeys(client: any): Record<string, string> {
+  const st = client?.base?.storage;
+  return st instanceof PersistingStorage ? { ...st.e2ee } : {};
+}
+
+// ── 群組聊天室（廠商不發記事本、新品直接貼聊天的那幾家，20261101000150） ──────────────
+
+const CONTENT_TYPE_NAMES: Record<number, string> = { 0: "NONE", 1: "IMAGE", 2: "VIDEO", 3: "AUDIO", 7: "STICKER", 14: "FILE" };
+export function chatContentType(m: any): string {
+  const t = m?.contentType;
+  return typeof t === "number" ? (CONTENT_TYPE_NAMES[t] ?? String(t)) : String(t ?? "");
+}
+
+/**
+ * 讀一個群組（c…）近 sinceMs 之後的訊息，舊→新排好，文字訊息順手解密。
+ * 先 getRecentMessagesV2 拿最新一批，不夠舊再用 getPreviousMessagesV2WithRequest 往回翻。
+ * 解不開的（沒有 E2EE 金鑰、群組金鑰拿不到）text 留 null、在 _decErr 寫原因，不整批失敗。
+ */
+export async function listChatMessages(
+  client: any, chatMid: string, opts: { sinceMs: number; max?: number; verbose?: boolean },
+): Promise<any[]> {
+  const max = opts.max ?? 1000;
+  const pageSize = 200;
+  const asList = (r: any) => (Array.isArray(r) ? r : (r?.messages ?? r?.messageBoxV2Messages ?? []));
+  const all: any[] = asList(await client.base.talk.getRecentMessagesV2({ messageBoxId: chatMid, messagesCount: pageSize } as any));
+  const oldestOf = (list: any[]) => list.reduce((a: any, m: any) => (!a || Number(m.createdTime) < Number(a.createdTime) ? m : a), null);
+  let oldest = oldestOf(all);
+  let lastLen = -1;
+  while (oldest && Number(oldest.createdTime) > opts.sinceMs && all.length < max && all.length !== lastLen) {
+    lastLen = all.length;
+    const page = asList(await client.base.talk.getPreviousMessagesV2WithRequest({
+      request: {
+        messageBoxId: chatMid,
+        endMessageId: { deliveredTime: Number(oldest.deliveredTime ?? oldest.createdTime), messageId: Number(oldest.id) },
+        messagesCount: pageSize, withReadCount: false, receivedOnly: false,
+      },
+      syncReason: 1,
+    } as any));
+    const seen = new Set(all.map((m: any) => String(m.id)));
+    for (const m of page) if (!seen.has(String(m.id))) all.push(m);
+    oldest = oldestOf(all);
+    log(opts.verbose, `chat ${chatMid}: +${page.length} → ${all.length}`);
+  }
+  const msgs = all.filter((m: any) => Number(m.createdTime) >= opts.sinceMs)
+    .sort((a: any, b: any) => Number(a.createdTime) - Number(b.createdTime));
+  for (const m of msgs) {
+    if (m.from == null && m.from_ != null) m.from = m.from_;
+    if (chatContentType(m) !== "NONE" || !Array.isArray(m.chunks) || !m.chunks.length) continue;
+    try { await client.base.e2ee.decryptE2EEMessage(m); }
+    catch (e) { m.text = null; m._decErr = String((e as any)?.message ?? e).slice(0, 200); }
+  }
+  return msgs;
+}
+
+/**
+ * 把聊天訊息併成「一篇」：同一個人連著發、間隔 ≤ gapMs；已經有圖也有字之後，
+ * 種類一換（圖→字、字→圖）就是下一篇（廠商常見「圖圖字 / 圖圖字」或「字圖圖 / 字圖圖」）。
+ * 只收文字與圖片，貼圖、檔案、分享卡片都略過。
+ */
+export function groupChatPosts(msgs: any[], opts: { gapMs?: number; maxPerPost?: number } = {}) {
+  const gapMs = opts.gapMs ?? 10 * 60_000;
+  const maxPer = opts.maxPerPost ?? 12;
+  const groups: any[][] = [];
+  let cur: any[] = [];
+  const kind = (m: any) => (chatContentType(m) === "IMAGE" ? "img" : "txt");
+  for (const m of msgs) {
+    const ct = chatContentType(m);
+    if (ct !== "NONE" && ct !== "IMAGE") continue;
+    if (ct === "NONE" && !String(m.text ?? "").trim()) continue;
+    const prev = cur[cur.length - 1];
+    const hasBoth = cur.some((x) => kind(x) === "img") && cur.some((x) => kind(x) === "txt");
+    const split = !prev || String(prev.from) !== String(m.from) ||
+      Number(m.createdTime) - Number(prev.createdTime) > gapMs ||
+      cur.length >= maxPer || (hasBoth && kind(prev) !== kind(m));
+    if (split && cur.length) { groups.push(cur); cur = []; }
+    cur.push(m);
+  }
+  if (cur.length) groups.push(cur);
+  return groups.map((g) => ({
+    postId: `chat:${g[0].id}`,
+    authorMid: g[0].from ? String(g[0].from) : null,
+    createdAt: new Date(Number(g[0].createdTime)).toISOString(),
+    updatedAt: new Date(Number(g[g.length - 1].createdTime)).toISOString(),
+    text: g.filter((m) => kind(m) === "txt").map((m) => String(m.text).trim()).join("\n\n").slice(0, 8000),
+    images: g.filter((m) => kind(m) === "img"),
+    undecrypted: g.filter((m) => m._decErr).length,
+  }));
+}
+
+/** 下載聊天室的一張圖（加密的走 E2EE 解密；官方帳號那種帶 DOWNLOAD_URL 的直接抓） */
+export async function downloadChatImage(client: any, m: any): Promise<{ bytes: Uint8Array; type: string }> {
+  let blob: Blob | null = null;
+  const meta = m.contentMetadata ?? {};
+  if (meta.DOWNLOAD_URL) {
+    const r = await fetch(meta.DOWNLOAD_URL);
+    if (!r.ok) throw new Error(`DOWNLOAD_URL ${r.status}`);
+    blob = await r.blob();
+  } else if (Array.isArray(m.chunks) && m.chunks.length) {
+    blob = await client.base.obs.downloadMediaByE2EE(m);
+  } else {
+    blob = await client.base.obs.downloadMessageData({ messageId: String(m.id), isSquare: false });
+  }
+  if (!blob) throw new Error("下載失敗");
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const type = bytes[0] === 0x89 && bytes[1] === 0x50 ? "image/png"
+    : bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[8] === 0x57 ? "image/webp"
+    : bytes[0] === 0x47 && bytes[1] === 0x49 ? "image/gif" : "image/jpeg";
+  return { bytes, type };
 }
 
 export function whoami(client: any) {

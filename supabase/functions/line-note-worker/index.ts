@@ -26,7 +26,7 @@ import QRCode from "npm:qrcode@1.5.4";
 import { corsHeaders } from "../_shared/cors.ts";
 import {
   clientFromToken, createNoteComment, createNotePost, deleteNotePost, downloadNoteImage, likeComment, type LineCredential, listComments, listHomes,
-  listPosts, loginByQr, readCredential, resolveShareChatMid, sendChatText, sharePostToChat, unsendChatMessage, updateNotePost, whoami,
+  listPosts, loginByQr, readCredential, readE2EEKeys, listChatMessages, groupChatPosts, downloadChatImage, resolveShareChatMid, sendChatText, sharePostToChat, unsendChatMessage, updateNotePost, whoami,
 } from "../_shared/lineNote.ts";
 import { extractPostTag, matchCampaign, normalizeForMatch, normalizeParseConfig, parseNoteComment, postTitle } from "../_shared/lineNoteParse.ts";
 import { buildShopLink, renderPostText, TZ } from "../_shared/lineNoteRender.ts";
@@ -145,6 +145,12 @@ async function clientFor(account: any) {
         const body = credentialFields(c);
         if (Object.keys(body).length) patch("line_note_accounts", `id=eq.${account.id}`, body).catch(() => {});
       },
+      // E2EE 金鑰（讀加密群組聊天用，20261101000150）：DB 有就塞回去；linejs 自己找到新的就存回 DB
+      e2eeKeys: account.e2ee_keys ?? null,
+      onE2EE: (keys) => {
+        account.e2ee_keys = keys;
+        patch("line_note_accounts", `id=eq.${account.id}`, { e2ee_keys: keys }).catch(() => {});
+      },
     },
   );
   await persistCredential(account, client);
@@ -213,8 +219,12 @@ async function doLogin(accountId: number) {
     // ⚠ refresh_token 一定要跟著存。只存 auth_token 的話 7 天後 access token 到期就沒得換，
     //   帳號整組停擺、只能再叫人掃一次 QR（2026-09-20 的 MUST_REFRESH_V3_TOKEN）。
     const cred = await readCredential(client);
+    // E2EE 私鑰：登入這一刻 LINE 才會交過來，沒存就讀不了加密的群組聊天（20261101000150）
+    const e2ee = readE2EEKeys(client);
+    if (!Object.keys(e2ee).length) log(`⚠ 帳號 ${accountId} 登入成功但沒拿到 E2EE 金鑰，加密的群組聊天會讀不到`);
     await patch("line_note_accounts", `id=eq.${accountId}`, {
       status: "active", line_mid: me.mid, display_name: me.displayName,
+      ...(Object.keys(e2ee).length ? { e2ee_keys: e2ee } : {}),
       ...credentialFields({ ...cred, accessToken: cred.accessToken || client.base.authToken }),
       qr_image: null, qr_url: null, pin_code: null, last_error: null, last_seen_at: new Date().toISOString(),
     });
@@ -1427,7 +1437,7 @@ function noteMedia(raw: any): unknown[] {
   });
 }
 async function jobCrawl(job: any) {
-  const rows = await rest(`line_note_communities?id=eq.${Number(job.community_id)}&select=id,home_id,home_name,crawl_enabled,crawl_days`);
+  const rows = await rest(`line_note_communities?id=eq.${Number(job.community_id)}&select=id,home_id,home_name,crawl_enabled,crawl_days,crawl_chat`);
   const c = rows?.[0];
   if (!c) throw new Error(`community ${job.community_id} not found`);
   if (!c.crawl_enabled) return { skipped: "這個群組已經取消爬選品" };
@@ -1451,6 +1461,12 @@ async function jobCrawl(job: any) {
   // 候選池顯示、半夜 Claude 看圖讀品名價格、之後轉成商品都用這份。一次 job 最多抓 60 秒，
   // 沒抓完的下一次讀取（或下一個 crawl job）接著抓。
   const images = await fetchMarketPostImages(client, c.id, Date.now() + 60_000);
+  // 聊天室（20261101000150）：廠商不發記事本、新品直接貼聊天的群組
+  let chat: unknown = null;
+  if (c.crawl_chat) {
+    try { chat = await crawlChat(client, c, Date.parse(since), Date.now() + 70_000); }
+    catch (e) { chat = { error: String((e as any)?.message ?? e).slice(0, 500) }; }
+  }
   // 讀完馬上叫 market-ai（Cloudflare）把新貼文整理成品項，不用等 5 分鐘一次的排程（20261101000090）。
   // 不等它跑完：waitUntil 讓請求在這支回應之後繼續送完。
   if (CRON_SECRET) {
@@ -1461,12 +1477,72 @@ async function jobCrawl(job: any) {
     }).then((res) => res.body?.cancel()).catch(() => {});
     (globalThis as any).EdgeRuntime?.waitUntil?.(kick);
   }
-  return { home: c.home_name, listed: notes.length, ...(Array.isArray(r) ? r[0] : r), images };
+  return { home: c.home_name, listed: notes.length, ...(Array.isArray(r) ? r[0] : r), images, chat };
+}
+
+/**
+ * 讀群組聊天室近 N 天的訊息 → 併成「篇」→ 跟記事本一樣丟 rpc_line_note_market_ingest。
+ * line_post_id = 'chat:<第一則訊息 id>'；圖片趁訊息還在手上就抓（加密的圖要原訊息才解得開，
+ * 所以不走 fetchMarketPostImages 那條「之後再補抓」的路）。
+ */
+async function crawlChat(client: any, c: any, sinceMs: number, until: number) {
+  const msgs = await listChatMessages(client, c.home_id, { sinceMs, max: 1500, verbose: VERBOSE });
+  const groups = groupChatPosts(msgs)
+    // 太短又沒圖的（「好的」「收到」）不是新品
+    .filter((g) => g.images.length > 0 || g.text.replace(/\s/g, "").length >= 8);
+  const undecrypted = msgs.filter((m: any) => m._decErr).length;
+  const posts = groups.filter((g) => g.text.trim()).map((g) => ({
+    postId: g.postId, authorMid: g.authorMid, authorName: null, createdAt: g.createdAt, updatedAt: g.updatedAt,
+    text: g.text, commentCount: 0, likeCount: 0,
+    media: g.images.map((m: any) => ({ type: "PHOTO", talkMessageId: String(m.id) })),
+  }));
+  const r = posts.length ? await rpc("rpc_line_note_market_ingest", { p_community_id: c.id, p_posts: posts }) : null;
+
+  // 圖：只抓還沒抓過的那幾篇
+  const byPost = new Map(groups.map((g) => [g.postId, g.images]));
+  const pending = posts.length
+    ? await rest(`line_note_market_posts?community_id=eq.${c.id}&line_post_id=like.chat:*&image_paths=is.null&select=id,line_post_id`)
+    : [];
+  let saved = 0, failed = 0, done = 0, lastError: string | null = null;
+  for (const p of pending ?? []) {
+    if (Date.now() > until) break;
+    const imgs = (byPost.get(p.line_post_id) ?? []).slice(0, MAX_IMAGES_PER_POST);
+    const paths: string[] = [];
+    for (let i = 0; i < imgs.length && Date.now() <= until; i++) {
+      try {
+        const img = await downloadChatImage(client, imgs[i]);
+        const ext = img.type === "image/png" ? "png" : img.type === "image/webp" ? "webp" : img.type === "image/gif" ? "gif" : "jpg";
+        const path = `supplier-notes/${c.id}/${p.id}/${i}.${ext}`;
+        const up = await fetch(`${SUPABASE_URL}/storage/v1/object/${PRODUCTS_BUCKET}/${path}`, {
+          method: "POST",
+          headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": img.type, "x-upsert": "true" },
+          body: img.bytes,
+        });
+        if (!up.ok) throw new Error(`storage ${up.status} ${(await up.text()).slice(0, 120)}`);
+        paths.push(path);
+        saved++;
+      } catch (e) {
+        failed++;
+        lastError = String((e as any)?.message ?? e).slice(0, 300);
+      }
+    }
+    if (paths.length < imgs.length && Date.now() > until) break;
+    await patch("line_note_market_posts", `id=eq.${p.id}`, {
+      image_paths: paths,
+      image_error: paths.length < imgs.length ? (lastError ?? "部分圖片沒抓到") : null,
+    });
+    done++;
+  }
+  return {
+    messages: msgs.length, undecrypted, dec_error: msgs.find((m: any) => m._decErr)?._decErr ?? null,
+    posts: posts.length, ...(Array.isArray(r) ? r[0] : (r ?? {})),
+    images: { posts: done, saved, failed, last_error: lastError },
+  };
 }
 
 const MAX_IMAGES_PER_POST = 8;
 async function fetchMarketPostImages(client: any, communityId: number, until: number) {
-  const posts = await rest(`line_note_market_posts?community_id=eq.${communityId}&image_paths=is.null&select=id,media&order=posted_at.desc.nullslast&limit=40`);
+  const posts = await rest(`line_note_market_posts?community_id=eq.${communityId}&image_paths=is.null&line_post_id=not.like.chat:*&select=id,media&order=posted_at.desc.nullslast&limit=40`);
   let saved = 0, failed = 0, done = 0, route: string | null = null, lastError: string | null = null;
   for (const p of posts ?? []) {
     if (Date.now() > until) break;
@@ -1790,6 +1866,23 @@ Deno.serve(async (req) => {
       catch (e) { err = String((e as any)?.message ?? e); }
       const after = await listComments(client, homeId, post.line_post_id, { verbose: true }).catch((e) => ({ error: String(e?.message ?? e) }));
       return json({ create, err, after: Array.isArray(after) ? after.map((c: any) => ({ id: c.commentId, by: c.authorName, text: c.text, raw: c.raw })) : after });
+    }
+    if (action === "chat_probe") {
+      // 唯讀：看廠商群組聊天室近 N 天長什麼樣（解不解得開、會併成幾篇），cron secret 也能打
+      const account = await loadAccount(Number(body.account_id ?? 13));
+      const client = await clientFor(account);
+      const days = Math.min(Math.max(Number(body.days ?? 3), 1), 14);
+      try {
+        const msgs = await listChatMessages(client, String(body.chat_mid), { sinceMs: Date.now() - days * 86400_000, max: 600 });
+        const groups = groupChatPosts(msgs);
+        return json({
+          ok: true, messages: msgs.length, has_keys: Object.keys(account.e2ee_keys ?? {}).length,
+          undecrypted: msgs.filter((m: any) => m._decErr).length,
+          dec_error: msgs.find((m: any) => m._decErr)?._decErr ?? null,
+          types: msgs.reduce((acc: any, m: any) => { const t = String(m.contentType); acc[t] = (acc[t] ?? 0) + 1; return acc; }, {}),
+          posts: groups.slice(-8).map((g) => ({ id: g.postId, at: g.createdAt, images: g.images.length, text: g.text.slice(0, 160) })),
+        });
+      } catch (e) { return json({ ok: false, error: String((e as any)?.message ?? e).slice(0, 800) }); }
     }
     if (action === "debug_chat_events") {
       if (caller !== "admin") return json({ error: "只能從後台按" }, 403);
