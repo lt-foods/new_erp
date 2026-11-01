@@ -462,3 +462,8 @@ verify_jwt = false
 # 佇列只有 SQL 函式寫得進去，所以不驗身分。
 [functions.storage-purge]
 verify_jwt = false
+
+# market-ai：選品 AI（Cloudflare Workers AI）。pg_cron 'market-ai-tick' 每 5 分鐘、line-note-worker 讀完
+# 廠商群組時呼叫（x-line-note-secret，同 line-note-worker 那把），也接受 service_role bearer；不驗 JWT。
+[functions.market-ai]
+verify_jwt = false

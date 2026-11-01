@@ -1451,6 +1451,16 @@ async function jobCrawl(job: any) {
   // 候選池顯示、半夜 Claude 看圖讀品名價格、之後轉成商品都用這份。一次 job 最多抓 60 秒，
   // 沒抓完的下一次讀取（或下一個 crawl job）接著抓。
   const images = await fetchMarketPostImages(client, c.id, Date.now() + 60_000);
+  // 讀完馬上叫 market-ai（Cloudflare）把新貼文整理成品項，不用等 5 分鐘一次的排程（20261101000090）。
+  // 不等它跑完：waitUntil 讓請求在這支回應之後繼續送完。
+  if (CRON_SECRET) {
+    const kick = fetch(`${SUPABASE_URL}/functions/v1/market-ai`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-line-note-secret": CRON_SECRET },
+      body: JSON.stringify({ action: "tick" }),
+    }).then((res) => res.body?.cancel()).catch(() => {});
+    (globalThis as any).EdgeRuntime?.waitUntil?.(kick);
+  }
   return { home: c.home_name, listed: notes.length, ...(Array.isArray(r) ? r[0] : r), images };
 }
 
