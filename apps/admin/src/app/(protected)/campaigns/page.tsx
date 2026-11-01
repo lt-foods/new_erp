@@ -19,6 +19,7 @@ import { CampaignOrdersPanel } from "@/components/CampaignOrdersPanel";
 import { CampaignItemsTable } from "@/components/CampaignItemsTable";
 import { DatePicker } from "@/components/DatePicker";
 import SpinButton from "@/components/SpinButton";
+import ConfidenceChevrons, { confidenceTextColor, PredictRange } from "@/components/ConfidenceChevrons";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
 import Spinner, { LoadingBlock } from "@/components/Spinner";
 import { CampaignThumb } from "@/components/CampaignThumb";
@@ -164,16 +165,12 @@ type CampaignReco = {
   confidence: "high" | "mid" | "low" | null;
   reasons: string[] | null;
 };
-const RECO_CONF_LABEL = { high: "信心高", mid: "信心中", low: "信心低" } as const;
-const RECO_CONF_TAG = {
-  high: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300",
-  mid: "bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300",
-  low: "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300",
-} as const;
 
-/** 來源標籤 + 預估人數（人工排、系統推薦都算同一套預估，之後才比得起來） */
-function RecoChips({ reco }: { reco: CampaignReco | undefined }) {
+/** 來源標籤 + 預估人數（人工排、系統推薦都算同一套預估，之後才比得起來）。
+ *  還沒結單（草稿 / 開團中）的團另外給預估範圍（回測 P20～P80）。 */
+function RecoChips({ reco, status }: { reco: CampaignReco | undefined; status: Status }) {
   if (!reco) return null;
+  const showRange = (status === "draft" || status === "open") && reco.low != null && reco.high != null;
   return (
     <>
       {reco.source === "manual" ? (
@@ -185,10 +182,9 @@ function RecoChips({ reco }: { reco: CampaignReco | undefined }) {
       )}
       {reco.buyers != null && (
         <span className="inline-flex items-center gap-1 text-[11px] text-zinc-500" title={(reco.reasons ?? []).join("\n")}>
-          <span className="font-bold text-zinc-800 dark:text-zinc-100">預估約 {reco.buyers} 位</span>
-          {reco.confidence && (
-            <span className={`rounded px-1.5 py-0.5 text-[10px] ${RECO_CONF_TAG[reco.confidence]}`}>{RECO_CONF_LABEL[reco.confidence]}</span>
-          )}
+          <ConfidenceChevrons level={reco.confidence} />
+          <span className={`font-bold ${confidenceTextColor(reco.confidence)}`} title={`預估約 ${reco.buyers} 位買家`}>{reco.buyers}</span>
+          {showRange && <PredictRange low={reco.low} high={reco.high} value={reco.buyers} level={reco.confidence} />}
         </span>
       )}
     </>
@@ -1266,7 +1262,7 @@ export default function CampaignsListPage() {
                   <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${campaignTypeBadge(r)}`}>
                     {campaignTypeLabel(r)}
                   </span>
-                  <RecoChips reco={recoMap.get(r.id)} />
+                  <RecoChips reco={recoMap.get(r.id)} status={r.status} />
                 </div>
               </div>
             </div>
@@ -1355,7 +1351,7 @@ export default function CampaignsListPage() {
                 </Td>
                 <Td className="min-w-[14rem]">
                   <span>{r.name}</span> <PiaopiaoBadge salesChannel={r.sales_channel} />
-                  {recoMap.get(r.id) && <div className="mt-1 flex flex-wrap items-center gap-1.5"><RecoChips reco={recoMap.get(r.id)} /></div>}
+                  {recoMap.get(r.id) && <div className="mt-1 flex flex-wrap items-center gap-1.5"><RecoChips reco={recoMap.get(r.id)} status={r.status} /></div>}
                 </Td>
                 <Td className="whitespace-nowrap"><StatusBadge s={r.status} /></Td>
                 <Td>
