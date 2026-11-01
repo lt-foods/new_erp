@@ -71,9 +71,12 @@ LINE 社群機器人              去重（已賣過？）        × 擁擠度 �
 **分數本體仍是類別層級統計**——8/9 回測 kNN 相似品 ρ=0.322 沒有比類別平均 0.32～0.36 準，
 向量是媒合工具，不是預測工具。
 
-pgvector 裝在現有 Postgres，不另養資料庫。4,390 商品算一次 embedding 不到 US$0.1
-（`text-embedding-3-small`），每月新品 1,000 筆可忽略。貼標籤用 LLM（準），
+pgvector 裝在現有 Postgres，不另養資料庫。貼標籤用 Claude（Phase A 已做，`product-tag`），
 向量鄰居投票當第二意見（便宜）。
+
+**embedding 要另一把 key**：Anthropic 沒有 embedding 模型，官方推薦的是 Voyage AI
+（`voyage-multilingual-2`，1024 維，中文佳，US$0.12 / 1M tokens；4,390 商品一次約 US$0.2）。
+不想再申請一家就用 OpenAI `text-embedding-3-small`。兩者都是 API，Edge Function `fetch` 即可。
 
 ### 2.2 外部榜單的限制
 
@@ -148,9 +151,9 @@ pgvector 裝在現有 Postgres，不另養資料庫。4,390 商品算一次 embe
 
 | 要做 | 為什麼 |
 |---|---|
-| 新品上架自動貼標：LLM 看商品名回標籤，寫 `product_tag_map`（`source` 加 `'llm'`）；先補掉 960 個 | 標籤是一切的基礎 |
-| `campaign_daily_stats(date, campaign_id, orders, buyers, comments, cancelled, viewers)`，pg_cron 每晚聚合 | 看得到「第一天賣多少」，回寫與回測都要它 |
-| 選品機器人補記「來自哪個社群」（`source_channel`） | 現在 4,217 則不知道從哪來 |
+| 新品上架自動貼標：Claude 看商品名回標籤，寫 `product_tag_map`（`source` 加 `'llm'`）；先補掉 960 個 ✅ #1101 | 標籤是一切的基礎 |
+| `campaign_daily_stats(date, campaign_id, orders, buyers, comments, cancelled, viewers)`，pg_cron 每晚聚合 ✅ #1101 | 看得到「第一天賣多少」，回寫與回測都要它 |
+| 選品機器人補記「來自哪個社群」（`source_channel`）✅ #1101（Apps Script 端要送 groupId / groupName） | 現在 4,217 則不知道從哪來 |
 | 採購單開始填「預計到貨日」（UI 預設帶廠商歷史中位天數） | 之後才有準時率 |
 
 **不做**：曝光紀錄、貼文連結帶來源、個人推播、商城排序。前面決定不走人與社群。
@@ -158,7 +161,7 @@ pgvector 裝在現有 Postgres，不另養資料庫。4,390 商品算一次 embe
 ### Phase B — 向量與進料（2 週）
 
 - `CREATE EXTENSION vector;` `product_embeddings(product_id, model, embedding vector(1536), text_hash, updated_at)` + HNSW。
-- Edge Function `product-embed`：pg_cron 每 10 分鐘撿 `text_hash` 變了的商品，批次打 embedding API 寫回。
+- Edge Function `product-embed`：pg_cron 每 10 分鐘撿 `text_hash` 變了的商品，批次打 embedding API（Voyage）寫回。
   同一支也負責外部商品與目錄的向量。API key 走 `Deno.env.get` → PR 敏感設定第一格要勾。
 - `market_products`、`supplier_catalog_items` 兩張表 + Excel 上傳頁（欄位照實際匯出檔定）。
 - `rpc_match_external_product(id)`：回最像的 5 個已賣商品（含當時滲透率）、建議標籤、是否已賣過（cosine ≥ 0.9）。
@@ -166,7 +169,7 @@ pgvector 裝在現有 Postgres，不另養資料庫。4,390 商品算一次 embe
 
 ### Phase C — 分數、回寫、廠商評分（2 週）
 
-- `rpc_supplier_scorecard(p_days)` + 後台「廠商評分」頁（§四）。
+- `rpc_supplier_scorecard(p_days)` + 後台「廠商評分」頁（§四）。✅ 提前在 #1101 做掉
 - `rpc_candidate_score(candidate_id)`：§三的維度 → 分數、信心、理由文字；候選池頁面加欄、可依分數排序、反面清單。
 - 回寫：開團 24 小時 / 7 天的結果寫回類別勝率（Beta 後驗：成功＝滲透率達該類中位以上）；
   排序時 Thompson Sampling 抽樣，10% 探索槽。
