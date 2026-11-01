@@ -26,7 +26,47 @@ type Candidate = {
   similarity_score: number | null;
   /** 廠商群組來源：{ market_post_id, ... }；用來反查貼文圖片 */
   raw: { market_post_id?: number } | null;
+  /** 推薦系統 ⑤ 預估（20261101000160）；一對一，PostgREST 回物件（保險起見也接陣列） */
+  reco_predictions: Prediction | Prediction[] | null;
 };
+
+type Prediction = {
+  buyers: number; low: number; high: number; confidence: "high" | "mid" | "low"; reasons: string[];
+  /** 同款最近開過、還沒結束（開團中／已收單／還沒到貨／已排草稿），先別重開 */
+  recent_open: boolean;
+};
+const predictionOf = (r: Candidate): Prediction | null =>
+  Array.isArray(r.reco_predictions) ? (r.reco_predictions[0] ?? null) : r.reco_predictions;
+
+const CONF_LABEL: Record<Prediction["confidence"], string> = { high: "信心高", mid: "信心中", low: "信心低" };
+const CONF_COLOR: Record<Prediction["confidence"], string> = {
+  high: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+  mid: "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300",
+  low: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300",
+};
+
+/**
+ * 預估買家數（推薦系統 v1：最像的已賣商品 + 同類近 4 週 + 價格帶，回測排名相關 0.82）。
+ * 區間是回測的 P20～P80，下限常是 0（約三成的團真的 0 人）。滑過看理由。
+ */
+function PredictInfo({ r }: { r: Candidate }) {
+  const p = predictionOf(r);
+  if (!p) {
+    if (r.parsed?.pending) return <span className="text-[11px] text-zinc-400">比對中</span>;
+    return <span className="text-zinc-300 dark:text-zinc-600">—</span>;
+  }
+  return (
+    <div className="space-y-0.5 text-[11px] text-zinc-500 dark:text-zinc-400" title={p.reasons.join("\n")}>
+      <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">約 {p.buyers} 位</div>
+      <div>{p.low}～{p.high} 位</div>
+      <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] ${CONF_COLOR[p.confidence]}`}>{CONF_LABEL[p.confidence]}</span>
+      {p.recent_open && (
+        <span className="ml-1 inline-flex rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">同款還沒結束</span>
+      )}
+      {p.reasons[0] && <div className={`line-clamp-2 ${p.recent_open ? "text-amber-700 dark:text-amber-300" : "text-zinc-400"}`}>{p.reasons[0]}</div>}
+    </div>
+  );
+}
 
 const imageUrl = (path: string) => getSupabase().storage.from("products").getPublicUrl(path).data.publicUrl;
 
@@ -143,6 +183,8 @@ export default function CommunityCandidatesPage() {
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [tab, setTab] = useState<Tab>("pending");
+  /** 排序：最新進來 / 預估買家多的在前 */
+  const [sortBy, setSortBy] = useState<"new" | "predict">("new");
   const [error, setError] = useState<string | null>(null);
   const [scheduling, setScheduling] = useState<number | null>(null);
   const [scheduleDate, setScheduleDate] = useState("");
@@ -199,11 +241,12 @@ export default function CommunityCandidatesPage() {
     let q = getSupabase()
       .from("community_product_candidates")
       .select(
-        "id, product_name_hint, raw_text, source_user_id, source_user_name, source_channel, system_status, owner_action, scheduled_open_at, scheduled_sort_order, created_at, adopted_supplier_name, adopted_cost, adopted_sale_price, parsed, similarity_score, raw",
+        "id, product_name_hint, raw_text, source_user_id, source_user_name, source_channel, system_status, owner_action, scheduled_open_at, scheduled_sort_order, created_at, adopted_supplier_name, adopted_cost, adopted_sale_price, parsed, similarity_score, raw, reco_predictions(buyers, low, high, confidence, reasons, recent_open)",
         { count: "exact" }
-      )
-      .order("created_at", { ascending: false })
-      .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
+      );
+    // 依預估排：一對一的 embed 可以拿來排父表（PostgREST order=reco_predictions(buyers).desc.nullslast）
+    if (sortBy === "predict") q = q.order("reco_predictions(buyers)", { ascending: false, nullsFirst: false });
+    q = q.order("created_at", { ascending: false }).range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
 
     if (tab === "scheduled") q = q.gte("scheduled_open_at", new Date(sinceMs).toISOString().slice(0, 10));
     else if (tab !== "collected" && tab !== "adopted") q = q.gte("created_at", new Date(sinceMs).toISOString());
@@ -245,7 +288,7 @@ export default function CommunityCandidatesPage() {
   useEffect(() => {
     reload();
     clearSelected();
-  }, [query, tab, page]);
+  }, [query, tab, page, sortBy]);
 
   const patch = async (id: number, updates: Record<string, unknown>) => {
     setBusy(true);
@@ -707,6 +750,15 @@ export default function CommunityCandidatesPage() {
             清除
           </SpinButton>
         )}
+        <select
+          value={sortBy}
+          onChange={(e) => { setSortBy(e.target.value as "new" | "predict"); setPage(0); }}
+          className="rounded-md border border-zinc-300 px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+          title="預估買家：最像的已賣商品 + 同類近 4 週 + 價格帶"
+        >
+          <option value="new">最新進來</option>
+          <option value="predict">預估買家多的在前</option>
+        </select>
       </div>
 
       {error && (
@@ -795,6 +847,7 @@ export default function CommunityCandidatesPage() {
                 </th>
                 <th className="px-3 py-2 text-left font-medium">時間</th>
                 <th className="px-3 py-2 text-left font-medium">商品名稱</th>
+                <th className="px-3 py-2 text-left font-medium">預估買家</th>
                 <th className="px-3 py-2 text-left font-medium">賣過嗎</th>
                 <th className="px-3 py-2 text-left font-medium">文案</th>
                 <th className="px-3 py-2 text-left font-medium">來源</th>
@@ -839,6 +892,7 @@ export default function CommunityCandidatesPage() {
                     <SupplierInfo p={r.parsed} />
                     <SupplierImages paths={r.raw?.market_post_id != null ? postImages[r.raw.market_post_id] : undefined} />
                   </td>
+                  <td className="w-36 px-3 py-3 align-top"><PredictInfo r={r} /></td>
                   <td className="w-44 px-3 py-3 align-top"><SoldInfo p={r.parsed} /></td>
                   <td className="max-w-xs px-3 py-3 text-zinc-600 dark:text-zinc-300">
                     <span title={r.raw_text}>
@@ -940,7 +994,12 @@ export default function CommunityCandidatesPage() {
                   )}
                 </div>
                 <SupplierInfo p={r.parsed} />
-                {r.parsed && <div className="mt-1.5"><SoldInfo p={r.parsed} /></div>}
+                {r.parsed && (
+                  <div className="mt-1.5 grid grid-cols-2 gap-2">
+                    <PredictInfo r={r} />
+                    <SoldInfo p={r.parsed} />
+                  </div>
+                )}
                 <SupplierImages paths={r.raw?.market_post_id != null ? postImages[r.raw.market_post_id] : undefined} />
 
                 <p className="mt-1 whitespace-pre-line text-xs text-zinc-600 dark:text-zinc-300">
