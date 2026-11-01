@@ -143,6 +143,7 @@ type CampaignsCache = {
   total: number;
   itemCounts: Map<number, number>;
   listOrderCounts: Map<number, { normalQty: number; offsetQty: number }>;
+  recoMap: Map<number, CampaignReco>;
   queryDraft: string;
   query: string;
   status: string;
@@ -152,6 +153,47 @@ type CampaignsCache = {
   ts: number;
 };
 let campaignsCache: CampaignsCache | null = null;
+
+/** 推薦系統：這團是人工排還是系統推薦、開團前的預估人數（reco_campaign_predictions，20261101000250） */
+type CampaignReco = {
+  campaign_id: number;
+  source: "manual" | "reco" | "reco_explore";
+  buyers: number | null;
+  low: number | null;
+  high: number | null;
+  confidence: "high" | "mid" | "low" | null;
+  reasons: string[] | null;
+};
+const RECO_CONF_LABEL = { high: "信心高", mid: "信心中", low: "信心低" } as const;
+const RECO_CONF_TAG = {
+  high: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300",
+  mid: "bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300",
+  low: "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300",
+} as const;
+
+/** 來源標籤 + 預估人數（人工排、系統推薦都算同一套預估，之後才比得起來） */
+function RecoChips({ reco }: { reco: CampaignReco | undefined }) {
+  if (!reco) return null;
+  return (
+    <>
+      {reco.source === "manual" ? (
+        <span className="inline-block rounded px-1.5 py-0.5 text-[11px] bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">人工排</span>
+      ) : (
+        <span className="inline-block rounded px-1.5 py-0.5 text-[11px] bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300">
+          {reco.source === "reco_explore" ? "系統推薦・新嘗試" : "系統推薦"}
+        </span>
+      )}
+      {reco.buyers != null && (
+        <span className="inline-flex items-center gap-1 text-[11px] text-zinc-500" title={(reco.reasons ?? []).join("\n")}>
+          <span className="font-bold text-zinc-800 dark:text-zinc-100">預估約 {reco.buyers} 位</span>
+          {reco.confidence && (
+            <span className={`rounded px-1.5 py-0.5 text-[10px] ${RECO_CONF_TAG[reco.confidence]}`}>{RECO_CONF_LABEL[reco.confidence]}</span>
+          )}
+        </span>
+      )}
+    </>
+  );
+}
 // 返回時若資料已超過這個毫秒數，背景靜默重抓（不擋畫面、不動捲動）。
 const CAMPAIGNS_REVALIDATE_MS = 60_000;
 
@@ -218,6 +260,7 @@ export default function CampaignsListPage() {
 
   const [itemCounts, setItemCounts] = useState<Map<number, number>>(() => campaignsCache?.itemCounts ?? new Map());
   const [listOrderCounts, setListOrderCounts] = useState<Map<number, { normalQty: number; offsetQty: number }>>(() => campaignsCache?.listOrderCounts ?? new Map());
+  const [recoMap, setRecoMap] = useState<Map<number, CampaignReco>>(() => campaignsCache?.recoMap ?? new Map());
 
   // 從 cache 還原時，第一輪 render 的 reset-page / 主 fetch 都要跳過，
   // 否則會把 cache 的 page=3 重置回 1、或把畫面歸零重抓。
@@ -651,6 +694,7 @@ export default function CampaignsListPage() {
         // 為了寫回 cache，沿用 ids.length===0 時舊有狀態（與原本 setItemCounts 不動的行為一致）
         let computedItemCounts: Map<number, number> = campaignsCache?.itemCounts ?? new Map();
         let computedOrderCounts: Map<number, { normalQty: number; offsetQty: number }> = campaignsCache?.listOrderCounts ?? new Map();
+        let computedReco: Map<number, CampaignReco> = campaignsCache?.recoMap ?? new Map();
 
         // 補商品數 + 下單總數量（normal / offset 分開、SUM(qty)）
         // chunked fetch: 跨萬筆訂單仍 work (bypass PostgREST 1000 row cap)
@@ -665,6 +709,14 @@ export default function CampaignsListPage() {
             fetchAll<{ id: number; campaign_id: number; order_kind: string; status: string }>(() =>
               sb.from("customer_orders").select("id, campaign_id, order_kind, status").in("campaign_id", ids).order("id", { ascending: true })),
           ]);
+          // 來源 + 預估（讀不到不擋列表）
+          {
+            const { data: recoRows } = await sb.from("reco_campaign_predictions")
+              .select("campaign_id, source, buyers, low, high, confidence, reasons").in("campaign_id", ids);
+            const rm = new Map<number, CampaignReco>(((recoRows ?? []) as CampaignReco[]).map((x) => [x.campaign_id, x]));
+            if (!cancelled) setRecoMap(rm);
+            computedReco = rm;
+          }
           const m = new Map<number, number>();
           for (const id of ids) m.set(id, 0);
           for (const it of itemRows) m.set(it.campaign_id, (m.get(it.campaign_id) ?? 0) + 1);
@@ -704,6 +756,7 @@ export default function CampaignsListPage() {
             total: count ?? 0,
             itemCounts: computedItemCounts,
             listOrderCounts: computedOrderCounts,
+            recoMap: computedReco,
             queryDraft: campaignsCache?.queryDraft ?? query,
             query,
             status,
@@ -1213,6 +1266,7 @@ export default function CampaignsListPage() {
                   <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${campaignTypeBadge(r)}`}>
                     {campaignTypeLabel(r)}
                   </span>
+                  <RecoChips reco={recoMap.get(r.id)} />
                 </div>
               </div>
             </div>
@@ -1299,7 +1353,10 @@ export default function CampaignsListPage() {
                 <Td className="w-20">
                   <CampaignThumb url={r.status === "open" ? campaignCoverUrl(r.cover_image_url, r.campaign_items) : null} name={r.name} />
                 </Td>
-                <Td className="min-w-[14rem]"><span>{r.name}</span> <PiaopiaoBadge salesChannel={r.sales_channel} /></Td>
+                <Td className="min-w-[14rem]">
+                  <span>{r.name}</span> <PiaopiaoBadge salesChannel={r.sales_channel} />
+                  {recoMap.get(r.id) && <div className="mt-1 flex flex-wrap items-center gap-1.5"><RecoChips reco={recoMap.get(r.id)} /></div>}
+                </Td>
                 <Td className="whitespace-nowrap"><StatusBadge s={r.status} /></Td>
                 <Td>
                   <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${campaignTypeBadge(r)}`}>
