@@ -462,8 +462,3 @@ verify_jwt = false
 # 佇列只有 SQL 函式寫得進去，所以不驗身分。
 [functions.storage-purge]
 verify_jwt = false
-
-# product-tag：pg_cron 每 30 分鐘打（_product_tag_tick，x-product-tag-secret）。
-# 只撿沒標籤的商品送 Claude 貼標；沒 secret 一律 401，所以不驗 JWT。
-[functions.product-tag]
-verify_jwt = false

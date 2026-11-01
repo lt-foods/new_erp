@@ -1,7 +1,7 @@
 -- ============================================================================
 -- 20261101000020_product_tag_llm.sql
 --
--- 新品自動貼標（docs/PLAN-選品系統-外部來源與向量媒合.md Phase A）。
+-- 新品自動貼標（docs/PLAN-選品系統-外部來源與商品媒合.md Phase A）。
 --
 -- 現況（2026-11-01 實查）：4,390 個商品只有 1,732 個有標籤；近 30 天新增 960 個、
 -- 0 個有標籤 —— 規則標籤 rpc_apply_product_tag_rules 只在 8/9 跑過一次，沒有掛在
@@ -14,23 +14,20 @@
 --   2. 規則套用抽成內部函式 _product_tag_apply_rules(tenant, only_missing)，
 --      rpc_apply_product_tag_rules 改成呼叫它（行為不變、簽名不變）。
 --      基底：20260809000020 建立的版本（後續沒被 CREATE OR REPLACE 過，已 grep 確認）。
---   3. 排程 _product_tag_tick()（每 30 分鐘）：先對沒標籤的商品跑規則，還是沒標籤的
---      才打 Edge Function product-tag（Claude），省 LLM 費用。
---      Edge Function 走 rpc_product_tag_llm_claim / rpc_product_tag_llm_write 兩支
---      service_role 專用 RPC 讀寫，模型只回標籤 code，DB 端驗 code 存在才寫。
+--   3. pg_cron 'product-tag-tick'（每 30 分鐘）：對沒標籤的商品跑規則。
+--   4. 規則補不到的交給 Claude：老闆只有 Claude Code 訂閱、沒有 API key，訂閱不能放進
+--      Edge Function，所以由每天一次的 **Claude Code 排程任務** 當分類員，透過
+--      scripts/product-tag-routine.mjs 呼叫 rpc_product_tag_llm_claim / rpc_product_tag_llm_write
+--      （postgres / service_role 專用；Management API 跑 SQL 的身分是 postgres）。
+--      模型只回標籤 code，DB 端驗 code 存在才寫。
 --
--- products 新增兩欄：tag_llm_at（LLM 處理過的時間，NULL = 還沒）、tag_llm_error。
--- LLM 回「沒有適合的標籤」也算處理過（tag_llm_at 有值、沒有 map 列），避免每 30 分鐘
--- 重送同一批；一天後 tick 會重新撿（規則 / 標籤字彙有改時才有意義）。
---
--- 需要的 vault 秘密（不進 migration，套完後另外跑）：
---   SELECT vault.create_secret('https://<ref>.functions.supabase.co/product-tag', 'product_tag_worker_url');
---   SELECT vault.create_secret('<隨機字串>', 'product_tag_cron_secret');
---   -- 同一個隨機字串設成 Edge Function secret PRODUCT_TAG_CRON_SECRET；另外要 ANTHROPIC_API_KEY
--- 沒設好時 tick 只跑規則、不打 LLM，cron 不會炸。
+-- products 新增兩欄：tag_llm_at（Claude 處理過的時間，NULL = 還沒）、tag_llm_error。
+-- Claude 回「看不出來」也算處理過（tag_llm_at 有值、沒有 map 列），30 天後才重撿
+-- （標籤字彙 / 品名有改時才有意義，省訂閱額度）；p_error 有值 = 這次沒處理到，清
+-- tag_llm_at，下一次排程就重撿。
 --
 -- rollback：
---   SELECT cron.unschedule('product-tag-tick');
+--   刪掉 Claude Code 排程任務「商品自動貼標」；SELECT cron.unschedule('product-tag-tick');
 --   DROP FUNCTION public._product_tag_tick();
 --   DROP FUNCTION public.rpc_product_tag_llm_claim(INT);
 --   DROP FUNCTION public.rpc_product_tag_llm_write(BIGINT, TEXT[], TEXT);
@@ -155,7 +152,7 @@ END;
 $$;
 
 -- 3. LLM 讀寫 RPC（service_role 專用）
---    claim：撿「沒有任何標籤 且 (沒送過 LLM 或 送過超過一天)」的商品，標 tag_llm_at 當作已領走
+--    claim：撿「沒有任何標籤 且 (沒送過 或 送過超過 30 天)」的商品，標 tag_llm_at 當作已領走
 --    （同一批不會被下一次 tick 重複送；LLM 失敗時 write 會把 tag_llm_at 清掉讓它重撿）。
 CREATE OR REPLACE FUNCTION public.rpc_product_tag_llm_claim(p_limit INT DEFAULT 40)
 RETURNS TABLE (id BIGINT, tenant_id UUID, name TEXT, short_name TEXT, description TEXT)
@@ -174,7 +171,7 @@ BEGIN
       FROM products p
      WHERE p.status <> 'discontinued'
        AND NOT EXISTS (SELECT 1 FROM product_tag_map m WHERE m.product_id = p.id)
-       AND (p.tag_llm_at IS NULL OR p.tag_llm_at < now() - INTERVAL '1 day')
+       AND (p.tag_llm_at IS NULL OR p.tag_llm_at < now() - INTERVAL '30 days')
      ORDER BY p.created_at DESC
      LIMIT GREATEST(COALESCE(p_limit, 40), 1)
      FOR UPDATE SKIP LOCKED
@@ -242,7 +239,7 @@ $$;
 REVOKE ALL ON FUNCTION public.rpc_product_tag_llm_write(BIGINT, TEXT[], TEXT) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.rpc_product_tag_llm_write(BIGINT, TEXT[], TEXT) TO service_role;
 
--- 4. 排程 tick：規則先、LLM 後
+-- 5. 排程 tick：只跑規則（Claude 那段由 Claude Code 排程任務做，見檔頭第 4 點）
 CREATE OR REPLACE FUNCTION public._product_tag_tick()
 RETURNS VOID
 LANGUAGE plpgsql
@@ -251,8 +248,6 @@ SET search_path = public
 AS $$
 DECLARE
   v_tenant UUID;
-  v_url    TEXT;
-  v_secret TEXT;
 BEGIN
   FOR v_tenant IN
     SELECT DISTINCT p.tenant_id FROM products p
@@ -260,29 +255,6 @@ BEGIN
   LOOP
     PERFORM public._product_tag_apply_rules(v_tenant, TRUE);
   END LOOP;
-
-  IF NOT EXISTS (
-    SELECT 1 FROM products p
-     WHERE p.status <> 'discontinued'
-       AND NOT EXISTS (SELECT 1 FROM product_tag_map m WHERE m.product_id = p.id)
-       AND (p.tag_llm_at IS NULL OR p.tag_llm_at < now() - INTERVAL '1 day')
-  ) THEN
-    RETURN;
-  END IF;
-
-  SELECT decrypted_secret INTO v_url    FROM vault.decrypted_secrets WHERE name = 'product_tag_worker_url'  LIMIT 1;
-  SELECT decrypted_secret INTO v_secret FROM vault.decrypted_secrets WHERE name = 'product_tag_cron_secret' LIMIT 1;
-  IF v_url IS NULL OR v_secret IS NULL THEN
-    RAISE NOTICE 'product-tag-tick: vault 缺 product_tag_worker_url / product_tag_cron_secret，只跑規則';
-    RETURN;
-  END IF;
-
-  PERFORM net.http_post(
-    url     := v_url,
-    headers := jsonb_build_object('Content-Type', 'application/json', 'x-product-tag-secret', v_secret),
-    body    := '{"action":"tick"}'::jsonb,
-    timeout_milliseconds := 120000
-  );
 END;
 $$;
 REVOKE ALL ON FUNCTION public._product_tag_tick() FROM PUBLIC, anon, authenticated;
@@ -291,6 +263,6 @@ SELECT cron.unschedule('product-tag-tick')
  WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'product-tag-tick');
 SELECT cron.schedule('product-tag-tick', '*/30 * * * *', $cron$ SELECT public._product_tag_tick(); $cron$);
 
--- 5. 立刻補一輪規則（沒標籤的 2,658 個裡規則能補約 1,974 個）
+-- 6. 立刻補一輪規則（沒標籤的 2,658 個裡規則能補約 1,974 個）
 SELECT public._product_tag_apply_rules(t.tenant_id, TRUE)
   FROM (SELECT DISTINCT tenant_id FROM public.products) t;
