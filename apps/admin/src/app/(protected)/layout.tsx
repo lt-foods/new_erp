@@ -190,9 +190,19 @@ function isBranchUser(user: { app_metadata?: Record<string, unknown> } | null | 
   return !stores.includes("總倉");
 }
 
+// 整組隱藏的群組裡，分店店長仍看得到的頁（唯讀；頁面自己依角色關掉編輯，資料走 RPC 收斂）
+// 週曆：店長要知道總部排了哪些團（Alex 2026-11-01），rpc_calendar_week 開給 store_manager。
+const BRANCH_MANAGER_ALLOWED_HREFS = new Set(["/community-candidates/calendar"]);
+
 function filterNavForBranch(nav: NavGroup[], user: { app_metadata?: Record<string, unknown> } | null | undefined): NavGroup[] {
+  const isManager = user?.app_metadata?.role === "store_manager";
   return nav
-    .filter((g) => !g.title || !BRANCH_HIDDEN_GROUPS.has(g.title))
+    .map((g) =>
+      g.title && BRANCH_HIDDEN_GROUPS.has(g.title)
+        ? { ...g, items: isManager ? g.items.filter((it) => BRANCH_MANAGER_ALLOWED_HREFS.has(it.href)) : [] }
+        : g,
+    )
+    .filter((g) => g.items.length > 0)
     .map((g) => ({
       ...g,
       items: g.items

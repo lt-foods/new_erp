@@ -31,11 +31,13 @@ type EvalRun = {
 
 type Outcome = {
   candidate_id: number;
-  predicted: number;
-  low: number;
-  high: number;
-  confidence: "high" | "mid" | "low";
+  predicted: number | null;
+  low: number | null;
+  high: number | null;
+  confidence: "high" | "mid" | "low" | null;
   slate_status: string | null;
+  /** manual = 人工排；reco = 週曆系統預選排入；reco_explore = 新嘗試名額（20261101000240） */
+  source: "manual" | "reco" | "reco_explore" | null;
   start_date: string | null;
   buyers_24h: number | null;
   buyers_7d: number | null;
@@ -45,6 +47,33 @@ type Outcome = {
 };
 
 const CONF_LABEL = { high: "信心高", mid: "信心中", low: "信心低" } as const;
+const SOURCE_LABEL = { manual: "人工排", reco: "系統推薦", reco_explore: "系統推薦・新嘗試" } as const;
+
+/** 人工排 vs 系統推薦：同一段時間（11/1 系統上線起）排程出去的團，開完之後的買家數 */
+function compareBySource(outcomes: Outcome[]) {
+  const median = (xs: number[]) => {
+    if (!xs.length) return null;
+    const a = [...xs].sort((x, y) => x - y);
+    const m = Math.floor(a.length / 2);
+    return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+  };
+  const avg = (xs: number[]) => (xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : null);
+  return (["manual", "reco", "reco_explore"] as const).map((src) => {
+    const rows = outcomes.filter((o) => (o.source ?? "manual") === src);
+    const opened = rows.filter((o) => o.start_date);
+    const done = rows.filter((o) => o.settled && o.buyers_final != null);
+    const finals = done.map((o) => Number(o.buyers_final));
+    return {
+      src,
+      scheduled: rows.length,
+      opened: opened.length,
+      settled: done.length,
+      avgFinal: avg(finals),
+      medFinal: median(finals),
+      avg24: avg(opened.filter((o) => o.buyers_24h != null).map((o) => Number(o.buyers_24h))),
+    };
+  });
+}
 const pct = (v: number | null) => (v == null ? "—" : `${(Number(v) * 100).toFixed(0)}%`);
 const n1 = (v: number | null) => (v == null ? "—" : Number(v).toLocaleString("zh-TW", { maximumFractionDigits: 1 }));
 const md = (s: string | null) => (s ? `${Number(s.slice(5, 7))}/${Number(s.slice(8, 10))}` : "—");
@@ -71,9 +100,9 @@ export default function RecoPerformancePage() {
     const [r, o] = await Promise.all([
       sb.from("reco_eval_runs").select("*").order("run_at", { ascending: false }).limit(60),
       sb.from("reco_outcomes")
-        .select("candidate_id, predicted, low, high, confidence, slate_status, start_date, buyers_24h, buyers_7d, buyers_final, settled, candidate:community_product_candidates(product_name_hint)")
+        .select("candidate_id, predicted, low, high, confidence, slate_status, source, start_date, buyers_24h, buyers_7d, buyers_final, settled, candidate:community_product_candidates(product_name_hint)")
         .order("scheduled_at", { ascending: false, nullsFirst: false })
-        .limit(100),
+        .limit(1000),
     ]);
     if (r.error || o.error) setError((r.error ?? o.error)?.message ?? null);
     else setError(null);
@@ -155,6 +184,42 @@ export default function RecoPerformancePage() {
               </div>
             </div>
           </div>
+
+          {/* 人工排 vs 系統推薦 */}
+          <section className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200 px-4 py-2.5 text-sm dark:border-zinc-800">
+              <span className="font-medium">人工排 vs 系統推薦</span>
+              <span className="text-xs text-zinc-500">11/1 起從週曆排程出去的團；買家數只算已到貨結束的，團數夠多才有參考價值</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full whitespace-nowrap text-sm">
+                <thead className="bg-zinc-50 text-xs text-zinc-500 dark:bg-zinc-900 dark:text-zinc-400">
+                  <tr>
+                    <th className="px-3 py-2 text-left font-medium">來源</th>
+                    <th className="px-3 py-2 text-right font-medium">排程</th>
+                    <th className="px-3 py-2 text-right font-medium">已開團</th>
+                    <th className="px-3 py-2 text-right font-medium">已結束</th>
+                    <th className="px-3 py-2 text-right font-medium">平均買家</th>
+                    <th className="px-3 py-2 text-right font-medium">買家中位數</th>
+                    <th className="px-3 py-2 text-right font-medium">開團 24 小時平均</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {compareBySource(outcomes).map((c) => (
+                    <tr key={c.src} className="border-t border-zinc-100 dark:border-zinc-800">
+                      <td className="px-3 py-2">{SOURCE_LABEL[c.src]}</td>
+                      <td className="px-3 py-2 text-right">{c.scheduled}</td>
+                      <td className="px-3 py-2 text-right">{c.opened}</td>
+                      <td className="px-3 py-2 text-right">{c.settled}</td>
+                      <td className="px-3 py-2 text-right font-semibold">{c.avgFinal != null ? `${n1(c.avgFinal)} 位` : "—"}</td>
+                      <td className="px-3 py-2 text-right">{c.medFinal != null ? `${n1(c.medFinal)} 位` : "—"}</td>
+                      <td className="px-3 py-2 text-right">{c.avg24 != null ? `${n1(c.avg24)} 位` : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
 
           {/* 每日回測 */}
           <section className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
@@ -263,13 +328,17 @@ export default function RecoPerformancePage() {
                         </Link>
                       </td>
                       <td className="px-3 py-2">
-                        {o.slate_status === "accepted"
-                          ? <span className="rounded bg-violet-100 px-1.5 py-0.5 text-[11px] text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">系統預選</span>
-                          : <span className="text-[11px] text-zinc-500">人工挑</span>}
+                        {o.source === "reco" || o.source === "reco_explore"
+                          ? <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[11px] text-violet-700 dark:bg-violet-950/40 dark:text-violet-300">{SOURCE_LABEL[o.source]}</span>
+                          : <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[11px] text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">人工排</span>}
                       </td>
                       <td className="px-3 py-2 text-right">
-                        <span className="font-semibold">{o.predicted}</span>
-                        <span className="ml-1 text-[11px] text-zinc-400">{o.low}～{o.high}・{CONF_LABEL[o.confidence]}</span>
+                        {o.predicted == null ? <span className="text-zinc-400">—</span> : (
+                          <>
+                            <span className="font-semibold">{o.predicted}</span>
+                            <span className="ml-1 text-[11px] text-zinc-400">{o.low}～{o.high}{o.confidence ? `・${CONF_LABEL[o.confidence]}` : ""}</span>
+                          </>
+                        )}
                       </td>
                       <td className="px-3 py-2">{o.start_date ? md(o.start_date) : <span className="text-zinc-400">還沒開</span>}</td>
                       <td className="px-3 py-2 text-right">{o.buyers_24h ?? "—"}</td>
