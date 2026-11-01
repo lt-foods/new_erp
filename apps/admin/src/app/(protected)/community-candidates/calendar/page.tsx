@@ -77,12 +77,6 @@ const slatePrediction = (s: Slate): Prediction | null => {
   const p = s.candidate?.reco_predictions ?? null;
   return Array.isArray(p) ? (p[0] ?? null) : p;
 };
-const CONF_LABEL: Record<Prediction["confidence"], string> = { high: "信心高", mid: "信心中", low: "信心低" };
-const CONF_TAG: Record<Prediction["confidence"], string> = {
-  high: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300",
-  mid: "bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300",
-  low: "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300",
-};
 
 const ACTION_LABEL: Record<string, string> = {
   none: "未處理",
@@ -693,11 +687,6 @@ function SlateCard({
       </Link>
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-[11px] font-bold text-zinc-800 dark:text-zinc-100">約 {p?.buyers ?? sl.predicted} 位</span>
-        {p && (
-          <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] ${CONF_TAG[p.confidence]}`}>
-            {CONF_LABEL[p.confidence]}
-          </span>
-        )}
         {p && <span className="text-[10px] text-zinc-400">{p.low}～{p.high} 位</span>}
       </div>
       {why && (

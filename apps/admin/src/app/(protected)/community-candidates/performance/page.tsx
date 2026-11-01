@@ -46,7 +46,6 @@ type Outcome = {
   candidate: { product_name_hint: string | null } | null;
 };
 
-const CONF_LABEL = { high: "信心高", mid: "信心中", low: "信心低" } as const;
 const SOURCE_LABEL = { manual: "人工排", reco: "系統推薦", reco_explore: "系統推薦・新嘗試" } as const;
 
 /** 人工排 vs 系統推薦：同一段時間（11/1 系統上線起）排程出去的團，開完之後的買家數 */
@@ -336,7 +335,7 @@ export default function RecoPerformancePage() {
                         {o.predicted == null ? <span className="text-zinc-400">—</span> : (
                           <>
                             <span className="font-semibold">{o.predicted}</span>
-                            <span className="ml-1 text-[11px] text-zinc-400">{o.low}～{o.high}{o.confidence ? `・${CONF_LABEL[o.confidence]}` : ""}</span>
+                            <span className="ml-1 text-[11px] text-zinc-400">{o.low}～{o.high}</span>
                           </>
                         )}
                       </td>

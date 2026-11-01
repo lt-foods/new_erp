@@ -164,12 +164,6 @@ type CampaignReco = {
   confidence: "high" | "mid" | "low" | null;
   reasons: string[] | null;
 };
-const RECO_CONF_LABEL = { high: "信心高", mid: "信心中", low: "信心低" } as const;
-const RECO_CONF_TAG = {
-  high: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300",
-  mid: "bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300",
-  low: "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300",
-} as const;
 
 /** 來源標籤 + 預估人數（人工排、系統推薦都算同一套預估，之後才比得起來）。
  *  還沒結單（草稿 / 開團中）的團另外給預估範圍（回測 P20～P80）。 */
@@ -192,9 +186,6 @@ function RecoChips({ reco, status }: { reco: CampaignReco | undefined; status: S
             <span className="whitespace-nowrap" title={`最少約 ${reco.low} 位、最多約 ${reco.high} 位`}>
               ⌄{reco.low} ⌃{reco.high}
             </span>
-          )}
-          {reco.confidence && (
-            <span className={`rounded px-1.5 py-0.5 text-[10px] ${RECO_CONF_TAG[reco.confidence]}`}>{RECO_CONF_LABEL[reco.confidence]}</span>
           )}
         </span>
       )}

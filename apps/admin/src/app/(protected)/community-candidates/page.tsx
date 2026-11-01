@@ -38,12 +38,6 @@ type Prediction = {
 const predictionOf = (r: Candidate): Prediction | null =>
   Array.isArray(r.reco_predictions) ? (r.reco_predictions[0] ?? null) : r.reco_predictions;
 
-const CONF_LABEL: Record<Prediction["confidence"], string> = { high: "信心高", mid: "信心中", low: "信心低" };
-const CONF_COLOR: Record<Prediction["confidence"], string> = {
-  high: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
-  mid: "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300",
-  low: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300",
-};
 
 /**
  * 預估買家數（推薦系統 v1：最像的已賣商品 + 同類近 4 週 + 價格帶，回測排名相關 0.82）。
@@ -59,9 +53,8 @@ function PredictInfo({ r }: { r: Candidate }) {
     <div className="space-y-0.5 text-[11px] text-zinc-500 dark:text-zinc-400" title={p.reasons.join("\n")}>
       <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">約 {p.buyers} 位</div>
       <div>{p.low}～{p.high} 位</div>
-      <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] ${CONF_COLOR[p.confidence]}`}>{CONF_LABEL[p.confidence]}</span>
       {p.recent_open && (
-        <span className="ml-1 inline-flex rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">同款還沒結束</span>
+        <span className="inline-flex rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">同款還沒結束</span>
       )}
       {p.reasons[0] && <div className={`line-clamp-2 ${p.recent_open ? "text-amber-700 dark:text-amber-300" : "text-zinc-400"}`}>{p.reasons[0]}</div>}
     </div>
