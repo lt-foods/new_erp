@@ -28,6 +28,8 @@ type Candidate = {
 
 type SupplierMatch = { product_id: number; name: string; score: number; campaigns: number; buyers: number; last_start: string | null };
 type SupplierParsed = {
+  /** 剛讀到、還沒給 Claude 拆品項（整篇先進候選池）；半夜 02:53 會被正式品項取代 */
+  pending?: boolean;
   price: number | null; price_text: string | null; spec: string | null; deadline_text: string | null;
   supplier: string | null; comment_count: number | null; matches: SupplierMatch[] | null;
 };
@@ -37,6 +39,14 @@ function SupplierInfo({ p }: { p: SupplierParsed | null }) {
   if (!p) return null;
   const m = p.matches?.[0];
   const sold = m && m.score >= 0.75;
+  if (p.pending) {
+    return (
+      <div className="mt-1 text-[11px] font-normal text-zinc-500 dark:text-zinc-400">
+        <span className="mr-1 rounded bg-sky-100 px-1 text-[10px] text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">待整理</span>
+        {p.price != null && `廠商價約 $${Number(p.price).toLocaleString("zh-TW")}・`}今晚 02:53 由 Claude 拆成品項、比對賣過沒
+      </div>
+    );
+  }
   const facts = [
     p.price != null ? `廠商價 $${Number(p.price).toLocaleString("zh-TW")}` : null,
     p.spec, p.deadline_text ? `截止 ${p.deadline_text}` : null,
@@ -523,7 +533,7 @@ export default function CommunityCandidatesPage() {
             // 廠商群組來的：廠商名、廠商報價（＝我們的成本）直接帶；售價留給老闆填，
             // 不要再從文案抓數字（抓到的就是廠商價，會把成本當售價）
             setAdoptSupplier(r.adopted_supplier_name ?? r.parsed?.supplier ?? "");
-            setAdoptCost(r.adopted_cost !== null ? String(r.adopted_cost) : (r.parsed?.price != null ? String(r.parsed.price) : ""));
+            setAdoptCost(r.adopted_cost !== null ? String(r.adopted_cost) : (r.parsed?.price != null && !r.parsed.pending ? String(r.parsed.price) : ""));
             setAdoptSalePrice(r.adopted_sale_price !== null ? String(r.adopted_sale_price) : (r.parsed ? "" : extractPrice(r.raw_text)));
             setScheduling(null);
           }}
