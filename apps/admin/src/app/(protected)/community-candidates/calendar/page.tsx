@@ -38,6 +38,27 @@ type CalendarCandidate = {
   adopted_sale_price: number | null;
 };
 
+/** 推薦系統 ⑥ 系統預選（20261101000170）：只是建議，按「排入」才真的排程 */
+type Prediction = { buyers: number; low: number; high: number; confidence: "high" | "mid" | "low"; reasons: string[] };
+type Slate = {
+  id: number;
+  slate_date: string;
+  rank: number;
+  predicted: number;
+  reason: string | null;
+  candidate: {
+    id: number;
+    product_name_hint: string | null;
+    raw_text: string | null;
+    reco_predictions: Prediction | Prediction[] | null;
+  } | null;
+};
+const slatePrediction = (s: Slate): Prediction | null => {
+  const p = s.candidate?.reco_predictions ?? null;
+  return Array.isArray(p) ? (p[0] ?? null) : p;
+};
+const CONF_LABEL: Record<Prediction["confidence"], string> = { high: "信心高", mid: "信心中", low: "信心低" };
+
 const ACTION_LABEL: Record<string, string> = {
   none: "未處理",
   collected: "已收藏",
@@ -74,6 +95,7 @@ export default function CommunityCandidatesCalendarPage() {
   const [rows, setRows] = useState<CalendarCandidate[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [slates, setSlates] = useState<Slate[]>([]);
 
   const days = useMemo(() => {
     const today = new Date();
@@ -104,7 +126,76 @@ export default function CommunityCandidatesCalendarPage() {
       setError(null);
       setRows((data as CalendarCandidate[]) ?? []);
     }
+    // 系統預選（讀不到不擋週曆本身）
+    const { data: sl } = await getSupabase()
+      .from("reco_slates")
+      .select(
+        "id, slate_date, rank, predicted, reason, candidate:community_product_candidates(id, product_name_hint, raw_text, reco_predictions(buyers, low, high, confidence, reasons))"
+      )
+      .eq("status", "suggested")
+      .gte("slate_date", startStr)
+      .lte("slate_date", endStr)
+      .order("slate_date", { ascending: true })
+      .order("rank", { ascending: true });
+    setSlates(((sl as unknown) as Slate[]) ?? []);
   }, [days]);
+
+  const slateName = (sl: Slate) => {
+    const hint = (sl.candidate?.product_name_hint ?? "").trim();
+    if (hint) return hint.slice(0, 60);
+    const raw = (sl.candidate?.raw_text ?? "").trim().replace(/\s+/g, " ");
+    return raw ? raw.slice(0, 30) : `候選 #${sl.candidate?.id ?? sl.id}`;
+  };
+
+  /** 排入：走候選池同一支 rpc_schedule_candidate（建草稿商品），再記成 accepted */
+  const acceptSlate = async (sl: Slate) => {
+    if (!sl.candidate) return;
+    setBusy(true);
+    try {
+      const sb = getSupabase();
+      const { error: rpcErr } = await sb.rpc("rpc_schedule_candidate", {
+        p_candidate_id: sl.candidate.id,
+        p_scheduled_date: sl.slate_date,
+        p_product_name: slateName(sl),
+      });
+      if (rpcErr) throw rpcErr;
+      const order = (localByDate[sl.slate_date]?.length ?? 0) + 1;
+      await sb.from("community_product_candidates").update({ scheduled_sort_order: order }).eq("id", sl.candidate.id);
+      const { error: decErr } = await sb.rpc("rpc_reco_slate_decide", { p_slate_id: sl.id, p_action: "accepted" });
+      if (decErr) console.warn("記錄排入失敗:", decErr.message);
+      await reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const skipSlate = async (sl: Slate) => {
+    setBusy(true);
+    try {
+      const { error: decErr } = await getSupabase().rpc("rpc_reco_slate_decide", { p_slate_id: sl.id, p_action: "skipped" });
+      if (decErr) throw decErr;
+      await reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const rebuildSlates = async () => {
+    setBusy(true);
+    try {
+      const { error: rbErr } = await getSupabase().rpc("rpc_reco_rebuild_slates");
+      if (rbErr) throw rbErr;
+      await reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   useEffect(() => {
     reload();
@@ -289,17 +380,28 @@ export default function CommunityCandidatesCalendarPage() {
 
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
-      <header className="flex items-center justify-between">
+      <header className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h1 className="text-xl font-semibold">選品週曆</h1>
-          <p className="mt-0.5 text-sm text-zinc-500">未來 7 天 · 拖拉卡片排序或換日</p>
+          <p className="mt-0.5 text-sm text-zinc-500">
+            未來 7 天 · 拖拉卡片排序或換日 · 虛線卡是系統預選（依預估買家，同款還沒結束的不推），按「排入」才會排程
+          </p>
         </div>
+        <div className="flex shrink-0 gap-2">
+        <SpinButton
+          onClick={rebuildSlates}
+          disabled={busy}
+          className="rounded-md border border-violet-300 px-3 py-1.5 text-sm text-violet-700 hover:bg-violet-50 disabled:opacity-50 dark:border-violet-800 dark:text-violet-300 dark:hover:bg-violet-950/30"
+        >
+          重新產生預選
+        </SpinButton>
         <Link
           href="/community-candidates"
           className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
         >
           候選池
         </Link>
+        </div>
       </header>
 
       {error && (
@@ -346,6 +448,12 @@ export default function CommunityCandidatesCalendarPage() {
                       ))
                     )}
                   </SortableContext>
+                  {slates
+                    .filter((sl) => sl.slate_date === key)
+                    .map((sl) => (
+                      <SlateCard key={`s${sl.id}`} slate={sl} name={slateName(sl)} busy={busy}
+                                 onAccept={acceptSlate} onSkip={skipSlate} />
+                    ))}
                 </DayColumn>
               );
             })}
@@ -353,7 +461,7 @@ export default function CommunityCandidatesCalendarPage() {
         </DndContext>
       )}
 
-      <div className="text-xs text-zinc-400">共 {rows?.length ?? 0} 筆</div>
+      <div className="text-xs text-zinc-400">共 {rows?.length ?? 0} 筆排程・{slates.length} 筆系統預選</div>
     </div>
   );
 }
@@ -499,6 +607,56 @@ function SortableCard({
           title="移出排程"
         >
           移出
+        </SpinButton>
+      </div>
+    </div>
+  );
+}
+
+/** 系統預選卡（虛線）：預估、理由、排入 / 略過 */
+function SlateCard({
+  slate: sl,
+  name,
+  busy,
+  onAccept,
+  onSkip,
+}: {
+  slate: Slate;
+  name: string;
+  busy: boolean;
+  onAccept: (sl: Slate) => void;
+  onSkip: (sl: Slate) => void;
+}) {
+  const p = slatePrediction(sl);
+  return (
+    <div className="flex flex-col gap-1 rounded-md border border-dashed border-violet-300 bg-violet-50/60 p-2 text-xs dark:border-violet-800 dark:bg-violet-950/20"
+         title={p?.reasons.join("\n") ?? sl.reason ?? ""}>
+      <span className="text-[10px] font-semibold text-violet-600 dark:text-violet-300">系統預選</span>
+      <Link href={`/community-candidates?highlight=${sl.candidate?.id ?? ""}`}
+            className="line-clamp-2 font-medium leading-snug hover:underline">
+        {name}
+      </Link>
+      <div className="text-[11px] text-zinc-600 dark:text-zinc-300">
+        約 {p?.buyers ?? sl.predicted} 位{p ? `（${p.low}～${p.high}）・${CONF_LABEL[p.confidence]}` : ""}
+      </div>
+      {(p?.reasons[0] ?? sl.reason) && (
+        <div className="line-clamp-2 text-[10px] text-zinc-500 dark:text-zinc-400">{p?.reasons[0] ?? sl.reason}</div>
+      )}
+      <div className="flex gap-1 pt-0.5">
+        <SpinButton
+          onClick={() => onAccept(sl)}
+          disabled={busy}
+          className="rounded border border-violet-400 bg-white px-1.5 py-0.5 text-[10px] text-violet-700 hover:bg-violet-100 disabled:opacity-50 dark:bg-zinc-900 dark:text-violet-300"
+        >
+          排入
+        </SpinButton>
+        <SpinButton
+          onClick={() => onSkip(sl)}
+          disabled={busy}
+          className="ml-auto rounded border border-zinc-300 px-1.5 py-0.5 text-[10px] text-zinc-500 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          title="不要這一項，之後不會再推"
+        >
+          略過
         </SpinButton>
       </div>
     </div>
