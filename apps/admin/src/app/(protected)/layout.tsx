@@ -94,6 +94,7 @@ const NAV: NavGroup[] = [
       { href: "/analytics/regions", label: "地區偏好", match: /^\/analytics\/regions/ },
       { href: "/analytics/members", label: "會員分析", match: /^\/analytics\/members/ },
       { href: "/analytics/products", label: "商品分析", match: /^\/analytics\/products/ },
+      { href: "/analytics/suppliers", label: "廠商評分", match: /^\/analytics\/suppliers/ },
     ],
   },
   {

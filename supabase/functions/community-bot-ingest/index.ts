@@ -28,6 +28,8 @@ interface IngestPayload {
   message_id?: string;                 // → source_external_id
 
   // 來源 (機器人有抓到才填，否則 NULL)
+  group_id?: string;                   // LINE 群組 id → source_channel
+  group_name?: string;                 // LINE 群組名 → source_channel
   user_id?: string;                    // → source_user_id
   user_name?: string;                  // → source_user_name
   channel?: string;                    // → source_channel (LINE 群組名/id)
@@ -101,7 +103,15 @@ Deno.serve(async (req) => {
       source_external_id: pick("message_id",   "messageId"),
       source_user_id:     pick("user_id",      "userId"),
       source_user_name:   pick("user_name",    "userName"),
-      source_channel:     pick("channel",      "channel"),          // 沒 camelCase 變體
+      // 來自哪個 LINE 群組：機器人帶 group_id / group_name（Apps Script 的 event.source.groupId
+      // + 群組名）就記成「群組名 (id)」；只有其中一個就記那一個；都沒有才退回舊的 channel。
+      // 2026-11-01：4,217 則候選全部不知道來自哪個群，沒這欄分不出同業 / 廠商 / 自家群。
+      source_channel:     ((): string | null => {
+        const gid  = pick("group_id",   "groupId");
+        const gname = pick("group_name", "groupName");
+        if (gid && gname) return `${gname} (${gid})`;
+        return gname ?? gid ?? pick("channel", "channel");
+      })(),
       source_post_url:    pick("post_url",     "postUrl"),
       product_name_hint:  pick("product_name", "productName"),
     };
