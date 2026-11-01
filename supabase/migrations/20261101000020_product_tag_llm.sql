@@ -15,7 +15,7 @@
 --      rpc_apply_product_tag_rules 改成呼叫它（行為不變、簽名不變）。
 --      基底：20260809000020 建立的版本（後續沒被 CREATE OR REPLACE 過，已 grep 確認）。
 --   3. 排程 _product_tag_tick()（每 30 分鐘）：先對沒標籤的商品跑規則，還是沒標籤的
---      才打 Edge Function product-tag（OpenAI），省 LLM 費用。
+--      才打 Edge Function product-tag（Claude），省 LLM 費用。
 --      Edge Function 走 rpc_product_tag_llm_claim / rpc_product_tag_llm_write 兩支
 --      service_role 專用 RPC 讀寫，模型只回標籤 code，DB 端驗 code 存在才寫。
 --
@@ -26,7 +26,7 @@
 -- 需要的 vault 秘密（不進 migration，套完後另外跑）：
 --   SELECT vault.create_secret('https://<ref>.functions.supabase.co/product-tag', 'product_tag_worker_url');
 --   SELECT vault.create_secret('<隨機字串>', 'product_tag_cron_secret');
---   -- 同一個隨機字串設成 Edge Function secret PRODUCT_TAG_CRON_SECRET；另外要 OPENAI_API_KEY
+--   -- 同一個隨機字串設成 Edge Function secret PRODUCT_TAG_CRON_SECRET；另外要 ANTHROPIC_API_KEY
 -- 沒設好時 tick 只跑規則、不打 LLM，cron 不會炸。
 --
 -- rollback：

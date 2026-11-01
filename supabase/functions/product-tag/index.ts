@@ -8,17 +8,19 @@
 //   1. 驗 x-product-tag-secret（= PRODUCT_TAG_CRON_SECRET）
 //   2. 讀 product_tags（code / name / group）當候選清單
 //   3. rpc_product_tag_llm_claim 撿一批（預設 40）沒標籤的商品
-//   4. 一次丟給 OpenAI（JSON schema 輸出），模型只能回清單裡的 code
+//   4. 一次丟給 Claude（structured output，JSON schema），模型只能回清單裡的 code
 //   5. 逐筆 rpc_product_tag_llm_write 寫回（code 不存在 DB 端會濾掉；失敗則清 tag_llm_at 讓下輪重撿）
 //   6. 時間夠就再撿一批；截止時間在 handler 裡算（模組層級只求值一次，見 CLAUDE.md #970）
 //
 // 不驗 JWT（verify_jwt=false）：只收 cron 的 secret。沒 secret 一律 401。
 //
-// secrets：PRODUCT_TAG_CRON_SECRET、OPENAI_API_KEY，選填 OPENAI_TAG_MODEL（預設 gpt-4o-mini）；
+// secrets：PRODUCT_TAG_CRON_SECRET、ANTHROPIC_API_KEY，選填 ANTHROPIC_TAG_MODEL（預設 claude-opus-5-5）；
 //          內建 SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY。
+// 費用：每批 40 個商品約 3k 輸入 / 1k 輸出 token；每月 1,000 個新品約 US$1。
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.8";
+import Anthropic from "npm:@anthropic-ai/sdk@1.3.0";
 import { corsHeaders } from "../_shared/cors.ts";
 
 function requireEnv(name: string): string {
@@ -48,9 +50,10 @@ Deno.serve(async (req) => {
     return json({ error: "unauthorized" }, 401);
   }
 
-  const apiKey = Deno.env.get("OPENAI_API_KEY");
-  if (!apiKey) return json({ error: "OPENAI_API_KEY not set", tagged: 0 }, 500);
-  const model = Deno.env.get("OPENAI_TAG_MODEL") || "gpt-4o-mini";
+  const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
+  if (!apiKey) return json({ error: "ANTHROPIC_API_KEY not set", tagged: 0 }, 500);
+  const model = Deno.env.get("ANTHROPIC_TAG_MODEL") || "claude-opus-5-5";
+  const anthropic = new Anthropic({ apiKey });
 
   // 截止時間在 handler 裡算：Edge Function 牆鐘上限 150s，留餘裕給最後一批寫回
   const deadline = Date.now() + 100_000;
@@ -77,10 +80,10 @@ Deno.serve(async (req) => {
 
     let result: Map<number, string[]>;
     try {
-      result = await classify(apiKey, model, tags, products);
+      result = await classify(anthropic, model, tags, products);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      console.error("product-tag: openai failed", msg);
+      console.error("product-tag: claude failed", msg);
       // 整批退回（清 tag_llm_at），下一輪重撿
       for (const p of products) {
         await sb.rpc("rpc_product_tag_llm_write", { p_product_id: p.id, p_tag_codes: [], p_error: msg });
@@ -102,8 +105,10 @@ Deno.serve(async (req) => {
   return json({ ok: true, claimed, tagged, empty, failed });
 });
 
-/** 一批商品 → OpenAI → { product_id: [tag codes] }。模型只能從清單裡選。 */
-async function classify(apiKey: string, model: string, tags: Tag[], products: Product[]): Promise<Map<number, string[]>> {
+/** 一批商品 → Claude → { product_id: [tag codes] }。模型只能從清單裡選。 */
+async function classify(
+  anthropic: Anthropic, model: string, tags: Tag[], products: Product[],
+): Promise<Map<number, string[]>> {
   const byGroup = new Map<string, string[]>();
   for (const t of tags) {
     const list = byGroup.get(t.tag_group) ?? [];
@@ -112,6 +117,8 @@ async function classify(apiKey: string, model: string, tags: Tag[], products: Pr
   }
   const tagText = [...byGroup.entries()].map(([g, list]) => `【${g}】${list.join("、")}`).join("\n");
 
+  // system 固定（標籤清單很少變）→ 掛 cache_control，每 30 分鐘一批剛好在 5 分鐘 TTL 外，
+  // 但同一次呼叫內連續幾批會命中；標籤清單變了 prefix 自然失效。
   const system =
     "你是台灣團購店的商品分類員。對每個商品，從標籤清單中挑出適用的標籤 code，規則：\n" +
     "1. 只能用清單裡的 code，不要發明新的。\n" +
@@ -119,6 +126,7 @@ async function classify(apiKey: string, model: string, tags: Tag[], products: Pr
     "3. 溫層（frozen / chilled / ambient）只給食品與生鮮，依品名判斷（寫明冷凍→frozen、冷藏/鮮奶/豆腐→chilled，其餘常溫→ambient）；非食品不給溫層。\n" +
     "4. 屬性（jp / kr / gift）看得出來才給。\n" +
     "5. 真的看不出是什麼就回空陣列。\n" +
+    "6. 每個輸入的 id 都要出現在輸出裡，一個不漏。\n" +
     "標籤清單：\n" + tagText;
 
   const user = products.map((p) =>
@@ -127,48 +135,52 @@ async function classify(apiKey: string, model: string, tags: Tag[], products: Pr
     (p.description ? `｜描述：${p.description.replace(/\s+/g, " ").slice(0, 200)}` : "")
   ).join("\n");
 
-  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model,
-      temperature: 0,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
-      response_format: {
+  // 分類是例行工作：effort low 就夠，thinking 維持預設（Claude Opus 5.5 關不掉）。
+  // fallbacks: "default"：被安全分類器擋下時由伺服器換模型重跑（商品名幾乎不會觸發，保險用）。
+  const response = await anthropic.beta.messages.create({
+    model,
+    max_tokens: 8000,
+    betas: ["server-side-fallback-2026-07-01"],
+    fallbacks: "default",
+    output_config: {
+      effort: "low",
+      format: {
         type: "json_schema",
-        json_schema: {
-          name: "product_tags",
-          strict: true,
-          schema: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            items: {
+              type: "array",
               items: {
-                type: "array",
-                items: {
-                  type: "object",
-                  additionalProperties: false,
-                  properties: {
-                    id: { type: "integer" },
-                    tags: { type: "array", items: { type: "string" } },
-                  },
-                  required: ["id", "tags"],
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  id: { type: "integer" },
+                  tags: { type: "array", items: { type: "string" } },
                 },
+                required: ["id", "tags"],
               },
             },
-            required: ["items"],
           },
+          required: ["items"],
         },
       },
-    }),
+    },
+    system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
+    messages: [{ role: "user", content: user }],
   });
-  if (!resp.ok) throw new Error(`openai ${resp.status}: ${(await resp.text()).slice(0, 300)}`);
-  const body = await resp.json() as { choices?: { message?: { content?: string } }[] };
-  const content = body.choices?.[0]?.message?.content ?? "{}";
-  const parsed = JSON.parse(content) as { items?: { id: number; tags: string[] }[] };
+
+  if (response.stop_reason === "refusal") {
+    throw new Error(`claude refused: ${response.stop_details?.category ?? "unknown"}`);
+  }
+  if (response.stop_reason === "max_tokens") {
+    throw new Error("claude hit max_tokens; batch too large");
+  }
+  const text = response.content
+    .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text")
+    .map((b) => b.text).join("");
+  const parsed = JSON.parse(text) as { items?: { id: number; tags: string[] }[] };
   const out = new Map<number, string[]>();
   for (const it of parsed.items ?? []) out.set(Number(it.id), Array.isArray(it.tags) ? it.tags : []);
   return out;
