@@ -56,10 +56,9 @@ type SupplierParsed = {
 };
 
 /** 廠商報價＋「我們賣過嗎」：向量相似度 ≥ 0.85 才算賣過（20261101000130），其餘對到的標「類似」 */
+/** 廠商報價那一行（價格・規格・截止・+1）；待整理的顯示暫定說明 */
 function SupplierInfo({ p }: { p: SupplierParsed | null }) {
   if (!p) return null;
-  const m = p.matches?.[0];
-  const sold = m && m.score >= 0.85;
   if (p.pending) {
     return (
       <div className="mt-1 text-[11px] font-normal text-zinc-500 dark:text-zinc-400">
@@ -73,24 +72,31 @@ function SupplierInfo({ p }: { p: SupplierParsed | null }) {
     p.spec, p.deadline_text ? `截止 ${p.deadline_text}` : null,
     p.comment_count ? `+1 ${p.comment_count}` : null,
   ].filter(Boolean);
+  if (facts.length === 0) return null;
+  return <div className="mt-1 text-[11px] font-normal text-zinc-500 dark:text-zinc-400">{facts.join("・")}</div>;
+}
+
+/**
+ * 「我們賣過嗎」：向量相似度 ≥ 0.85 才算賣過（20261101000130），其餘對到的標「類似」。
+ * 非廠商群組來的候選（parsed 是 null）不顯示；待整理的還沒比對。
+ */
+function SoldInfo({ p }: { p: SupplierParsed | null }) {
+  if (!p) return <span className="text-zinc-300 dark:text-zinc-600">—</span>;
+  if (p.pending) return <span className="text-[11px] text-zinc-400">比對中</span>;
+  const m = p.matches?.[0];
+  if (!m) {
+    return <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">沒賣過</span>;
+  }
+  const sold = m.score >= 0.85;
   return (
-    <div className="mt-1 space-y-0.5 text-[11px] font-normal text-zinc-500 dark:text-zinc-400">
-      {facts.length > 0 && <div>{facts.join("・")}</div>}
-      <div>
-        {sold ? (
-          <>
-            <span className="mr-1 rounded bg-emerald-100 px-1 text-[10px] text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">賣過</span>
-            {m.name.slice(0, 24)}（{m.campaigns} 團・{m.buyers} 人{m.last_start ? `・最後 ${m.last_start.slice(5)}` : ""}）
-          </>
-        ) : m ? (
-          <>
-            <span className="mr-1 rounded bg-zinc-100 px-1 text-[10px] dark:bg-zinc-800">類似</span>
-            {m.name.slice(0, 24)}（{m.campaigns} 團・{m.buyers} 人）
-          </>
-        ) : (
-          <span className="rounded bg-amber-100 px-1 text-[10px] text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">沒賣過</span>
-        )}
-      </div>
+    <div className="space-y-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+      {sold ? (
+        <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">賣過</span>
+      ) : (
+        <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[11px] text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">類似</span>
+      )}
+      <div className="text-zinc-700 dark:text-zinc-300" title={m.name}>{m.name.slice(0, 22)}</div>
+      <div>{m.campaigns} 團・{m.buyers} 人{m.last_start ? `・最後 ${m.last_start.slice(5)}` : ""}</div>
     </div>
   );
 }
@@ -789,6 +795,7 @@ export default function CommunityCandidatesPage() {
                 </th>
                 <th className="px-3 py-2 text-left font-medium">時間</th>
                 <th className="px-3 py-2 text-left font-medium">商品名稱</th>
+                <th className="px-3 py-2 text-left font-medium">賣過嗎</th>
                 <th className="px-3 py-2 text-left font-medium">文案</th>
                 <th className="px-3 py-2 text-left font-medium">來源</th>
                 <th className="px-3 py-2 text-left font-medium">狀態</th>
@@ -832,6 +839,7 @@ export default function CommunityCandidatesPage() {
                     <SupplierInfo p={r.parsed} />
                     <SupplierImages paths={r.raw?.market_post_id != null ? postImages[r.raw.market_post_id] : undefined} />
                   </td>
+                  <td className="w-44 px-3 py-3 align-top"><SoldInfo p={r.parsed} /></td>
                   <td className="max-w-xs px-3 py-3 text-zinc-600 dark:text-zinc-300">
                     <span title={r.raw_text}>
                       {r.raw_text.slice(0, 80)}
@@ -932,6 +940,7 @@ export default function CommunityCandidatesPage() {
                   )}
                 </div>
                 <SupplierInfo p={r.parsed} />
+                {r.parsed && <div className="mt-1.5"><SoldInfo p={r.parsed} /></div>}
                 <SupplierImages paths={r.raw?.market_post_id != null ? postImages[r.raw.market_post_id] : undefined} />
 
                 <p className="mt-1 whitespace-pre-line text-xs text-zinc-600 dark:text-zinc-300">
