@@ -53,9 +53,9 @@ function PredictInfo({ r }: { r: Candidate }) {
   return (
     <div className="space-y-0.5 text-[11px] text-zinc-500 dark:text-zinc-400" title={p.reasons.join("\n")}>
       <div className="flex items-center gap-1 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-        <ConfidenceChevrons level={p.confidence} />約 <span className={confidenceTextColor(p.confidence)}>{p.buyers}</span> 位
+        <ConfidenceChevrons level={p.confidence} /><span className={confidenceTextColor(p.confidence)} title={`預估約 ${p.buyers} 位買家`}>{p.buyers}</span>
       </div>
-      <div>{p.low}～{p.high} 位</div>
+      <div title={`最少約 ${p.low} 位、最多約 ${p.high} 位`}>⌄{p.low} ⌃{p.high}</div>
       {p.recent_open && (
         <span className="inline-flex rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">同款還沒結束</span>
       )}

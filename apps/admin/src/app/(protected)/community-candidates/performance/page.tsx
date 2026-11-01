@@ -337,7 +337,7 @@ export default function RecoPerformancePage() {
                           <>
                             <ConfidenceChevrons level={o.confidence} className="mr-1 align-middle" />
                             <span className={`font-semibold ${confidenceTextColor(o.confidence)}`}>{o.predicted}</span>
-                            <span className="ml-1 text-[11px] text-zinc-400">{o.low}～{o.high}</span>
+                            <span className="ml-1 text-[11px] text-zinc-400">⌄{o.low} ⌃{o.high}</span>
                           </>
                         )}
                       </td>

@@ -688,8 +688,8 @@ function SlateCard({
       </Link>
       <div className="flex flex-wrap items-center gap-1.5">
         <ConfidenceChevrons level={p?.confidence} />
-        <span className="text-[11px] font-bold text-zinc-800 dark:text-zinc-100">約 <span className={confidenceTextColor(p?.confidence)}>{p?.buyers ?? sl.predicted}</span> 位</span>
-        {p && <span className="text-[10px] text-zinc-400">{p.low}～{p.high} 位</span>}
+        <span className={`text-[11px] font-bold ${confidenceTextColor(p?.confidence)}`} title={`預估約 ${p?.buyers ?? sl.predicted} 位買家`}>{p?.buyers ?? sl.predicted}</span>
+        {p && <span className="text-[10px] text-zinc-400" title={`最少約 ${p.low} 位、最多約 ${p.high} 位`}>⌄{p.low} ⌃{p.high}</span>}
       </div>
       {why && (
         <div className="line-clamp-2 text-[10px] text-zinc-500 dark:text-zinc-400">{why.replace(/^試新：/, "")}</div>
