@@ -45,6 +45,8 @@ export default function SupplierGroupsPage() {
   const loadCrawl = useCallback(async () => {
     const { data, error: err } = await getSupabase().rpc("rpc_line_note_crawl_homes");
     if (err) { setError(translateRpcError(err)); return; }
+    // 讀成功就把上一次讀取失敗的紅字收掉（不然修好之後還一直掛著）
+    setError((prev) => (prev && /rpc_line_note_crawl_homes|line_note_accounts/.test(prev) ? null : prev));
     setCrawl((data ?? []) as CrawlHome[]);
   }, []);
 
