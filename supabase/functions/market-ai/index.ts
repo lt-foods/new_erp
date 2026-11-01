@@ -31,6 +31,17 @@ const CHAT_MODEL = Deno.env.get("CLOUDFLARE_AI_MODEL") || "@cf/meta/llama-4-scou
 const EMBED_MODEL = Deno.env.get("CLOUDFLARE_EMBED_MODEL") || "@cf/baai/bge-m3";
 const MAX_IMAGES = 3;
 
+/**
+ * 送進 Cloudflare 的文字一律走這裡：照「字元」截斷（不是 UTF-16 單位），並拿掉落單的 surrogate。
+ * 2026-11-01 第一輪：商品描述 .slice() 把表情符號切成一半，Workers AI 回
+ * 「8006 Invalid data for body - reason must be valid JSON」，整批貼標失敗。
+ */
+function clean(v: unknown, max: number): string {
+  const s = String(v ?? "").replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "");
+  const chars = Array.from(s);
+  return chars.length > max ? chars.slice(0, max).join("") : s;
+}
+
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 }
@@ -103,6 +114,23 @@ const TAG_RULES =
   "標籤規則：只能用清單裡的 code；每個商品至少 1 個「生鮮」「食品」或「非食品」群的標籤（食品可同時給大類和子類，例如 prepared + prep_dumpling）；" +
   "溫層 frozen / chilled / ambient 只有寫明才給，非食品不給；日本 / 韓國 / 禮盒看得出來就給 jp / kr / gift；看不出是什麼就給空陣列。";
 
+/**
+ * 模型貼的標籤照規則再濾一次（2026-11-01 第一輪 Llama 4 Scout 常見的錯）：
+ *   - 只留清單裡有的 code；
+ *   - 沒有任何「生鮮 / 食品」群標籤（＝非食品）→ 拿掉溫層；
+ *   - 同時有非食品群標籤 → 拿掉「熟食調理」這種食品群標籤（手膜被標 prepared）。
+ * 日本 / 韓國 / 禮盒判斷錯（加拿大蜂膠標 jp）規則救不了，留給人看。
+ */
+function fixTags(codes: string[], groupOf: Map<string, string>): string[] {
+  let out = [...new Set(codes.filter((c) => groupOf.has(c)))];
+  const groups = new Set(out.map((c) => groupOf.get(c)));
+  const isFood = groups.has("生鮮") || groups.has("食品");
+  const isNonFood = groups.has("非食品");
+  if (isNonFood && isFood) out = out.filter((c) => !["生鮮", "食品"].includes(groupOf.get(c)!));
+  if (!isFood || isNonFood) out = out.filter((c) => groupOf.get(c) !== "溫層");
+  return out;
+}
+
 // ── 1. 廠商貼文拆品項 ──────────────────────────────────────────────────────
 const ITEMS_SCHEMA = {
   name: "supplier_post_items",
@@ -151,7 +179,7 @@ async function imageDataUrl(path: string): Promise<string | null> {
   return null;
 }
 
-async function parsePost(post: { post_id: number; supplier?: string | null; community?: string | null; body: string; images?: string[] | null }, tagList: string) {
+async function parsePost(post: { post_id: number; supplier?: string | null; community?: string | null; body: string; images?: string[] | null }, tagList: string, groupOf: Map<string, string>) {
   const system =
     "你是台灣團購店的選品助理。下面是廠商在 LINE 群組記事本貼的商品貼文（文字＋圖片），把它拆成商品清單：\n" +
     "- 一篇可能有好幾個商品，每個一筆；不是在賣商品的貼文（公告、休假、匯款、出貨通知）→ items 給空陣列。\n" +
@@ -161,7 +189,7 @@ async function parsePost(post: { post_id: number; supplier?: string | null; comm
     "- spec：規格（1000克、10入）。deadline_text：截止或出貨時間原文。\n" +
     "- 價格、品名常常只寫在圖上，要看圖。\n" +
     TAG_RULES + "\n標籤清單：\n" + tagList;
-  const content: any[] = [{ type: "text", text: `廠商：${post.supplier ?? post.community ?? ""}\n貼文：\n${post.body.slice(0, 4000)}` }];
+  const content: any[] = [{ type: "text", text: `廠商：${clean(post.supplier ?? post.community ?? "", 100)}\n貼文：\n${clean(post.body, 4000)}` }];
   for (const p of (post.images ?? []).slice(0, MAX_IMAGES)) {
     const url = await imageDataUrl(p);
     if (url) content.push({ type: "image_url", image_url: { url } });
@@ -177,7 +205,7 @@ async function parsePost(post: { post_id: number; supplier?: string | null; comm
       price_text: typeof it.price_text === "string" ? it.price_text.slice(0, 200) : null,
       spec: typeof it.spec === "string" ? it.spec.slice(0, 200) : null,
       deadline_text: typeof it.deadline_text === "string" ? it.deadline_text.slice(0, 200) : null,
-      tags: Array.isArray(it.tags) ? it.tags.filter((c: any) => typeof c === "string" && /^[a-z_]+$/.test(c)) : [],
+      tags: fixTags(Array.isArray(it.tags) ? it.tags.filter((c: any) => typeof c === "string" && /^[a-z_]+$/.test(c)) : [], groupOf),
     }));
 }
 
@@ -192,15 +220,15 @@ const TAGS_SCHEMA = {
     required: ["items"],
   },
 };
-async function tagProducts(products: any[], tagList: string): Promise<Map<number, string[]>> {
+async function tagProducts(products: any[], tagList: string, groupOf: Map<string, string>): Promise<Map<number, string[]>> {
   const system = "你是台灣團購店的商品分類員。對每個商品，從標籤清單挑出適用的標籤 code。每個輸入的 id 都要出現在輸出裡。\n" +
     TAG_RULES + "\n標籤清單：\n" + tagList;
   const user = products.map((p) =>
-    `id=${p.id} 品名：${p.name}` + (p.short_name && p.short_name !== p.name ? `｜短名：${p.short_name}` : "") +
-    (p.description ? `｜描述：${String(p.description).replace(/\s+/g, " ").slice(0, 150)}` : "")).join("\n");
+    `id=${p.id} 品名：${clean(p.name, 150)}` + (p.short_name && p.short_name !== p.name ? `｜短名：${clean(p.short_name, 80)}` : "") +
+    (p.description ? `｜描述：${clean(String(p.description).replace(/\s+/g, " "), 150)}` : "")).join("\n");
   const out = await chatJson(system, user, TAGS_SCHEMA, 3000);
   const m = new Map<number, string[]>();
-  for (const it of out?.items ?? []) m.set(Number(it.id), Array.isArray(it.tags) ? it.tags.filter((c: any) => typeof c === "string") : []);
+  for (const it of out?.items ?? []) m.set(Number(it.id), fixTags(Array.isArray(it.tags) ? it.tags.filter((c: any) => typeof c === "string") : [], groupOf));
   return m;
 }
 
@@ -211,6 +239,7 @@ async function tick(started: number) {
   const err = (where: string, e: unknown) => { const m = `${where}: ${String((e as any)?.message ?? e).slice(0, 300)}`; console.error(m); stats.errors.push(m); };
   const tags = await loadTags();
   const tagList = tagText(tags);
+  const groupOf = new Map(tags.map((t) => [t.code, t.tag_group]));
 
   // 1. 廠商貼文（使用者在等的，最先做；最多用 45 秒）
   while (until(45_000)) {
@@ -218,7 +247,7 @@ async function tick(started: number) {
     if (!posts.length) break;
     for (const p of posts) {
       try {
-        const items = await parsePost(p, tagList);
+        const items = await parsePost(p, tagList, groupOf);
         const n = await rpc("rpc_market_post_write", { p_post_id: p.post_id, p_items: items, p_error: null });
         stats.posts++; stats.items += Number(n) || 0;
       } catch (e) {
@@ -235,7 +264,7 @@ async function tick(started: number) {
     if (!rows.length) break;
     productBacklog = true;
     try {
-      const vecs = await embed(rows.map((r: any) => String(r.body).slice(0, 1000)));
+      const vecs = await embed(rows.map((r: any) => clean(r.body, 1000)));
       const n = await rpc("rpc_ai_product_embed_write", {
         p_rows: rows.map((r: any, i: number) => ({ product_id: r.product_id, hash: r.hash, model: EMBED_MODEL, embedding: vecs[i] })),
       });
@@ -249,7 +278,7 @@ async function tick(started: number) {
     const rows = await rpc("rpc_ai_item_embed_claim", { p_limit: 50 }) ?? [];
     if (!rows.length) break;
     try {
-      const vecs = await embed(rows.map((r: any) => String(r.body).slice(0, 1000)));
+      const vecs = await embed(rows.map((r: any) => clean(r.body, 1000)));
       const n = await rpc("rpc_ai_item_embed_write", { p_rows: rows.map((r: any, i: number) => ({ item_id: r.item_id, embedding: vecs[i] })) });
       stats.item_vectors += Number(n) || 0;
     } catch (e) { err("item vectors", e); break; }
@@ -260,7 +289,7 @@ async function tick(started: number) {
     const products = await rpc("rpc_product_tag_llm_claim", { p_limit: 30 }) ?? [];
     if (!products.length) break;
     try {
-      const m = await tagProducts(products, tagList);
+      const m = await tagProducts(products, tagList, groupOf);
       for (const p of products) {
         const codes = m.get(Number(p.id)) ?? [];
         await rpc("rpc_product_tag_llm_write", { p_product_id: p.id, p_tag_codes: codes, p_error: null });
@@ -293,18 +322,20 @@ Deno.serve(async (req) => {
     if (action === "tick") return json(await tick(started));
     if (action === "probe") {
       const ids = (Array.isArray(body.post_ids) ? body.post_ids : []).map(Number).filter(Number.isInteger).slice(0, 10);
-      const tagList = tagText(await loadTags());
+      const tagRows = await loadTags();
+      const tagList = tagText(tagRows);
+      const groupOf = new Map(tagRows.map((t) => [t.code, t.tag_group]));
       const posts = await rest(`line_note_market_posts?id=in.(${ids.join(",") || 0})&select=id,text,image_paths,line_note_communities(home_name)`);
       const out = [];
       for (const p of posts ?? []) {
         try {
-          out.push({ post_id: p.id, items: await parsePost({ post_id: p.id, community: p.line_note_communities?.home_name, body: p.text, images: p.image_paths }, tagList) });
+          out.push({ post_id: p.id, items: await parsePost({ post_id: p.id, community: p.line_note_communities?.home_name, body: p.text, images: p.image_paths }, tagList, groupOf) });
         } catch (e) { out.push({ post_id: p.id, error: String((e as any)?.message ?? e) }); }
       }
       return json({ model: CHAT_MODEL, results: out, ms: Date.now() - started });
     }
     if (action === "embed_probe") {
-      const texts = (Array.isArray(body.texts) ? body.texts : []).map(String).slice(0, 20);
+      const texts = (Array.isArray(body.texts) ? body.texts : []).map((t: unknown) => clean(t, 1000)).slice(0, 20);
       const vecs = await embed(texts);
       return json({ model: EMBED_MODEL, dims: vecs[0]?.length ?? 0, n: vecs.length });
     }
