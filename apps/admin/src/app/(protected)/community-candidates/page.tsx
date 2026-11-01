@@ -49,7 +49,7 @@ function SupplierImages({ paths }: { paths: string[] | undefined }) {
 
 type SupplierMatch = { product_id: number; name: string; score: number; campaigns: number; buyers: number; last_start: string | null };
 type SupplierParsed = {
-  /** 剛讀到、還沒給 Claude 拆品項（整篇先進候選池）；半夜 02:53 會被正式品項取代 */
+  /** 剛讀到、還沒拆品項（整篇先進候選池）；幾分鐘內 market-ai（Cloudflare）會換成正式品項 */
   pending?: boolean;
   price: number | null; price_text: string | null; spec: string | null; deadline_text: string | null;
   supplier: string | null; comment_count: number | null; matches: SupplierMatch[] | null;
@@ -64,7 +64,7 @@ function SupplierInfo({ p }: { p: SupplierParsed | null }) {
     return (
       <div className="mt-1 text-[11px] font-normal text-zinc-500 dark:text-zinc-400">
         <span className="mr-1 rounded bg-sky-100 px-1 text-[10px] text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">待整理</span>
-        {p.price != null && `廠商價約 $${Number(p.price).toLocaleString("zh-TW")}・`}今晚 02:53 由 Claude 拆成品項、比對賣過沒
+        {p.price != null && `廠商價約 $${Number(p.price).toLocaleString("zh-TW")}・`}品名是暫定的（抓貼文第一行），幾分鐘內 AI 看完圖文會整理成正式品名、價格，並標出我們有沒有賣過
       </div>
     );
   }

@@ -574,36 +574,39 @@ export async function deleteNotePost(client, homeId, postId, { sourceType, verbo
 
 /**
  * 下載記事本貼文的圖片（廠商群組爬取用，20261101000080）。
- * 記事本的媒體走 myhome 的舊式 OBS（上傳是 myhome/h/upload.nhn，見 linejs uploadNoteMedia），
- * 讀到的貼文 media 是 { objectId, obsNamespace: "post" }。下載網址 linejs 沒有現成方法，
- * 依序試幾種、都帶登入標頭，第一個成功的記在 noteImageRoute，同一次 invocation 之後直接用。
+ * 讀到的貼文 media 是 { objectId, serviceName: "privnote", obsNamespace: "post", preferCdn: true, … }，
+ * 圖就在 CDN：https://obs.line-scdn.net/r/<serviceName>/<obsNamespace>/<objectId>，不用登入
+ * （2026-11-01 實測 200 image/jpeg）。先前猜 myhome/post、只帶登入標頭全部 400 / 404 ——
+ * 路徑要照 media 自己給的 serviceName / obsNamespace，舊資料沒存 serviceName 時退用 privnote。
+ * CDN 不行才退回帶登入標頭打 obs.line-apps.com 同一路徑。
  */
-let noteImageRoute: number | null = null;
-export async function downloadNoteImage(client, oid: string, verbose = false): Promise<{ bytes: Uint8Array; type: string; route: string }> {
-  const headers = client.base.request.getHeader("GET");
-  const routes = [
-    `https://obs.line-apps.com/r/myhome/post/${oid}`,
-    `https://obs.line-apps.com/myhome/post/download.nhn?oid=${oid}`,
-    `https://obs.line-scdn.net/r/myhome/post/${oid}`,
-    `https://obs.line-apps.com/myhome/h/download.nhn?oid=${oid}`,
+export async function downloadNoteImage(
+  client, media: { objectId: string; serviceName?: string | null; obsNamespace?: string | null }, verbose = false,
+): Promise<{ bytes: Uint8Array; type: string; route: string }> {
+  const svc = media.serviceName || "privnote";
+  const ns = media.obsNamespace || "post";
+  const path = `r/${svc}/${ns}/${media.objectId}`;
+  const tries: { url: string; auth: boolean }[] = [
+    { url: `https://obs.line-scdn.net/${path}`, auth: false },
+    { url: `https://obs.line-apps.com/${path}`, auth: true },
   ];
-  const order = noteImageRoute == null ? routes.map((_, i) => i) : [noteImageRoute, ...routes.map((_, i) => i).filter((i) => i !== noteImageRoute)];
   const errs: string[] = [];
-  for (const i of order) {
+  for (const t of tries) {
     try {
-      const res = await client.base.fetch(routes[i], { method: "GET", headers });
+      const res = t.auth
+        ? await client.base.fetch(t.url, { method: "GET", headers: client.base.request.getHeader("GET") })
+        : await fetch(t.url);
       const type = (res.headers.get("content-type") ?? "").split(";")[0].trim();
       if (res.ok && type.startsWith("image/")) {
-        noteImageRoute = i;
-        return { bytes: new Uint8Array(await res.arrayBuffer()), type, route: routes[i].replace(oid, "{oid}") };
+        return { bytes: new Uint8Array(await res.arrayBuffer()), type, route: t.url.replace(media.objectId, "{oid}") };
       }
-      errs.push(`#${i} ${res.status} ${type || "-"}`);
+      errs.push(`${res.status} ${type || "-"} ${t.url.slice(0, 40)}`);
     } catch (e) {
-      errs.push(`#${i} ${(e as any)?.message ?? e}`.slice(0, 120));
+      errs.push(`${(e as any)?.message ?? e}`.slice(0, 120));
     }
   }
-  log(verbose, `圖片下載失敗 ${oid}:`, errs.join(" | "));
-  throw new Error(`圖片下載全部失敗：${errs.join(" | ")}`);
+  log(verbose, `圖片下載失敗 ${media.objectId}:`, errs.join(" | "));
+  throw new Error(`圖片下載失敗：${errs.join(" | ")}`);
 }
 
 export async function createNotePost(client, homeId, { text, images = [], sourceType, verbose = false } = {}) {

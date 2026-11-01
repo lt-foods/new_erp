@@ -1,7 +1,7 @@
 "use client";
 
 // 廠商群組 —— 設定機器人（小幫手）要讀哪些廠商群組的記事本。
-// 讀到的貼文半夜由 Claude 拆成商品，直接進候選池（附價格、規格、我們賣過嗎）。
+// 讀到的貼文幾分鐘內由 market-ai（Cloudflare Workers AI）拆成商品，直接進候選池（附價格、規格、我們賣過嗎）。
 // 資料：rpc_line_note_crawl_homes / rpc_line_note_set_crawl（20261101000040）、
 //       rpc_line_note_enqueue('list_homes') 讀帳號所在的群組（跟 LINE 記事本頁同一條路）。
 
@@ -119,7 +119,7 @@ export default function SupplierGroupsPage() {
     if (err) { setError(translateRpcError(err)); return; }
     if ((data as { job_id?: number | null })?.job_id) {
       kickWorker();
-      setNotice(`「${home.name}」讀取中，幾秒後新貼文就會出現在候選池（標「待整理」）；今晚 02:53 由 Claude 拆成品項、比對賣過沒。`);
+      setNotice(`「${home.name}」讀取中，幾秒後新貼文就會出現在候選池（標「待整理」），幾分鐘內 AI 會拆成品項、比對賣過沒。`);
     }
     await loadCrawl();
   }
@@ -134,7 +134,7 @@ export default function SupplierGroupsPage() {
         <p className="text-sm text-zinc-500">
           選機器人帳號、勾要讀的廠商群組。讀到的新貼文馬上進
           <Link href="/community-candidates" className="mx-1 text-blue-600 hover:underline dark:text-blue-400">候選池</Link>
-          （標「待整理」），每天 02:53 由 Claude 拆成品項，附團購價、規格，以及我們有沒有賣過。
+          （標「待整理」），幾分鐘內 AI（Cloudflare）看圖文拆成品項，附團購價、規格，以及我們有沒有賣過。
           每天 01:13 自動讀最近 3 天，也可以按「立即讀取」。只讀貼文，不留言、不按讚。
         </p>
       </header>
