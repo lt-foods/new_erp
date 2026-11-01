@@ -6,7 +6,7 @@
 //
 //   { action: "tick" }                 pg_cron 每分鐘打一次（header x-line-note-secret）
 //                                      → 到 read_times 就排 read；撿 line_note_jobs 裡
-//                                        queued 的工作跑（logout / list_homes / post / read）
+//                                        queued 的工作跑（logout / list_homes / post / read / crawl）
 //   { action: "login", account_id }    後台按「登入」直接呼叫（Authorization: 使用者 JWT）
 //                                      → 掃 QR，QR 圖 / PIN 寫進 line_note_accounts 給後台顯示，
 //                                        掃完把 token 存進 DB，之後 tick 都用那把 token
@@ -1413,9 +1413,44 @@ async function jobPromo(job: any) {
   return { promoted: true, chatMid, card, ...(promo.with_card && !post ? { noPost: true } : {}), ...(cardError ? { cardError } : {}) };
 }
 
+// ── 廠商群組記事本爬取（20261101000040） ─────────────────────────────────────
+// pg_cron 'line-note-crawl' 每天台北 01:13 對勾了「爬選品」的群組各排一筆 crawl；後台按「立即讀取」也會排。
+// 只列貼文（list.json），不讀留言、不按讚、不發文 —— 一個群組一天一次 list，對 LINE 的量比讀留言還小。
+// 解析交給 Claude Code 排程（scripts/supplier-note-routine.mjs），這裡只負責存原文。
+function noteMedia(raw: any): unknown[] {
+  const m = raw?.contents?.media;
+  if (!Array.isArray(m)) return [];
+  return m.slice(0, 20).map((x: any) => ({
+    objectId: x?.objectId ?? null, type: x?.type ?? null, obsNamespace: x?.obsNamespace ?? null, serviceCode: x?.serviceCode ?? null,
+  }));
+}
+async function jobCrawl(job: any) {
+  const rows = await rest(`line_note_communities?id=eq.${Number(job.community_id)}&select=id,home_id,home_name,crawl_enabled,crawl_days`);
+  const c = rows?.[0];
+  if (!c) throw new Error(`community ${job.community_id} not found`);
+  if (!c.crawl_enabled) return { skipped: "這個群組已經取消爬選品" };
+  const client = await clientFor(await loadAccount(job.account_id));
+  const days = Math.min(Math.max(Number(c.crawl_days) || 3, 1), 14);
+  const since = new Date(Date.now() - days * 86400_000).toISOString();
+  const notes = await listPosts(client, c.home_id, { limit: 150, since, verbose: VERBOSE });
+  const posts = notes.map((n: any) => ({
+    postId: n.postId == null ? null : String(n.postId),
+    authorMid: n.authorMid ?? null,
+    authorName: n.authorName ?? null,
+    createdAt: n.createdAt ?? null,
+    updatedAt: n.updatedAt ?? null,
+    text: String(n.text ?? "").slice(0, 8000),
+    commentCount: Number(n.commentCount ?? 0),
+    likeCount: Number(n.likeCount ?? 0),
+    media: noteMedia(n.raw),
+  })).filter((p: any) => p.postId);
+  const r = await rpc("rpc_line_note_market_ingest", { p_community_id: c.id, p_posts: posts });
+  return { home: c.home_name, listed: notes.length, ...(Array.isArray(r) ? r[0] : r) };
+}
+
 const HANDLERS: Record<string, (job: any, reactUntil: number) => Promise<unknown>> = {
   logout: jobLogout, list_homes: jobListHomes, post: jobPost, read: jobRead, close: jobClose, remind: jobRemind, share: jobShare, reopen: jobReopen, refresh: jobRefresh,
-  promo: jobPromo,
+  promo: jobPromo, crawl: jobCrawl,
 };
 
 // LINE 叫我們慢一點：這個帳號的發文／分享／留言類工作先停 lineBackoffMs（讀留言照跑）。

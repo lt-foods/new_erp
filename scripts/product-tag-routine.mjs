@@ -18,8 +18,8 @@
 // 需要環境變數 SUPABASE_ACCESS_TOKEN、SUPABASE_PROJECT_REF。
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import { parseIds, sql } from "./lib/supabase-sql.mjs";
 
 const RULES = [
   "只能用 tags 清單裡的 code，不要發明新的。",
@@ -29,30 +29,6 @@ const RULES = [
   "品名看不出是什麼（例如只有貨號）就不要硬貼：tags 給空陣列（30 天後才會再撿）。",
   "只有「這次來不及處理 / 出錯」才用 release（下次排程立刻重撿）。",
 ];
-
-function sql(query) {
-  const ref = process.env.SUPABASE_PROJECT_REF;
-  const token = process.env.SUPABASE_ACCESS_TOKEN;
-  if (!ref || !token) throw new Error("缺環境變數 SUPABASE_PROJECT_REF / SUPABASE_ACCESS_TOKEN");
-  const args = [
-    "-sS", "-X", "POST",
-    `https://api.supabase.com/v1/projects/${ref}/database/query`,
-    "-H", `Authorization: Bearer ${token}`,
-    "-H", "Content-Type: application/json",
-    "--data-binary", "@-",
-  ];
-  if (fs.existsSync("/root/.ccr/ca-bundle.crt")) args.unshift("--cacert", "/root/.ccr/ca-bundle.crt");
-  const out = execFileSync("curl", args, { input: JSON.stringify({ query }), encoding: "utf8" });
-  const body = JSON.parse(out);
-  if (!Array.isArray(body)) throw new Error(`SQL 失敗：${body.message ?? out.slice(0, 300)}`);
-  return body;
-}
-
-function parseIds(list) {
-  const ids = String(list ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-  if (ids.length === 0 || !ids.every((s) => /^\d+$/.test(s))) throw new Error("id 必須是逗號分隔的整數");
-  return ids.map(Number);
-}
 
 const [cmd, arg] = process.argv.slice(2);
 
