@@ -24,7 +24,7 @@
 --        ・現在的資料跟「最新一輪備份」一模一樣（價格版本、十月月結表頭／明細／爭議／調整、十月以外每個月份、蛋小白 8/1～10/1 每一筆）
 --        ・十月月結每一張都還是草稿（有一張已送店家／有異議／已確認／作廢就停）
 --        ・三個分店價版本跟 11/2 盤點一樣：62（9/28 18:51:00 起）→ 64（10/5 16:38:51 起）→ 42（11/2 11:21:03 起、老闆帳號建的、現在有效），前後剛好接上
---        ・十月有效人工調整還是那 4 筆（+33、+232、−232、−268）
+--        ・十月有效人工調整還是那 6 筆（#56 −232、#57 +232、#58 −19、#59 −249、#60 +249、#62 −216，合計 −235）
 --        ・蛋小白落在 64 那段的帳：11 家店、12 筆、計價數量 38、改價後合計 −836，各店差額跟盤點一樣；十一月 1～2 日沒有蛋小白的帳
 --    ③改價：把 64（26805）和 42（33876）兩個版本刪掉（原樣在備份），再用系統改價函式 rpc_upsert_price
 --        從「64 那段原本的開始時間」（2026-10-05 16:38:51）重開「42、沒有結束日」（20260422120001:473-502）。
@@ -43,7 +43,7 @@
 --        ・11 家店：月結還是同一張、還是草稿；應收與分店價合計的變化＝預期差額（合計 −836）；成本、調整、張數、筆數不變；
 --          蛋小白以外的明細逐行不變；蛋小白落在 64 那段的明細單價＝42
 --        ・其他店：方案甲逐欄＝備份；方案乙金額、明細逐行＝備份
---        ・十月人工調整、爭議逐欄＝備份（4 筆調整原樣還在、還是有效）
+--        ・十月人工調整、爭議逐欄＝備份（6 筆調整原樣還在、還是有效）
 --        ・十月以外每一個月份的月結表頭／明細／調整／爭議逐列＝備份（八月、九月一個字沒變）；蛋小白 8/1～10/1 每一筆＝備份
 --    ⑥把「改完之後的樣子」也存一份（第 4 份還原要用它確認沒有人後來又動過）
 --  ★ 要填的：下面 DECLARE 裡的兩行（CEO 在老闆確認後填）
@@ -94,7 +94,7 @@ BEGIN
          ((DATE '2026-11-01')::timestamp AT TIME ZONE 'Asia/Taipei') AS nov_from,
          11 AS exp_n_store, 12 AS exp_n_lines, (-836)::numeric AS exp_delta, 38::numeric AS exp_net_qty,
          ARRAY[-154,-132,-132,-88,-88,-66,-44,-44,-44,-44,0]::numeric[] AS exp_deltas,
-         ARRAY[-268,-232,33,232]::numeric[] AS exp_adj
+         ARRAY[-249,-232,-216,-19,232,249]::numeric[] AS exp_adj
   -- ▲▲▲ 事實段結束 ▲▲▲
   ) x;
 
@@ -228,10 +228,10 @@ BEGIN
   END IF;
   v_from := (SELECT effective_from FROM public.prices WHERE id = f.id_b);   -- 64 那段原本的開始時間（含秒以下）
   v_to   := (SELECT effective_from FROM public.prices WHERE id = f.id_c);   -- 42 那段原本的開始時間
-  -- 十月有效人工調整還是那 4 筆（⛔ 不作廢；重產後逐欄比對原樣還在）
+  -- 十月有效人工調整還是那 6 筆、逐筆金額排序後相等（⛔ 不作廢；重產後逐欄比對原樣還在）
   IF (SELECT COALESCE(array_agg(a.amount ORDER BY a.amount), ARRAY[]::numeric[]) FROM public.store_settlement_adjustments a
        WHERE a.tenant_id = v_tenant AND a.settlement_month = f.oct AND a.status = 'active') <> f.exp_adj THEN
-    RAISE EXCEPTION '【停】十月有效人工調整跟 11/2 盤點不一樣（盤點：+33、+232、−232、−268）。什麼都沒改，請截圖給 CEO。';
+    RAISE EXCEPTION '【停】十月有效人工調整跟 11/2 盤點不一樣（盤點：6 筆（#56 −232、#57 +232、#58 −19、#59 −249、#60 +249、#62 −216，合計 −235））。什麼都沒改，請截圖給 CEO。';
   END IF;
   -- 十一月 1～2 日（到 42 那段開始前）不可以有蛋小白的帳：那段也會被改價影響，但不在修正範圍
   v_cnt := (SELECT COUNT(*) FROM public.stores st CROSS JOIN LATERAL public._store_inbound_lines(st.id, f.nov_from, GREATEST(v_to, f.nov_from)) l
@@ -436,7 +436,7 @@ BEGIN
     RAISE EXCEPTION '【停】方案%：重產後沒有蛋小白帳的店，月結明細有 % 行（兩邊合計）跟備份不一樣。已全部取消。%', p_mode, v_cnt,
       CASE WHEN p_mode = '乙' THEN '其他店重產會變（0-D 第 7500 項），要改走方案甲或先查清楚，請截圖給 CEO。' ELSE '請截圖給 CEO。' END;
   END IF;
-  -- 7-6 十月爭議、十月人工調整：逐欄＝備份（4 筆有效調整原樣還在；⛔ 這份不作廢、不新增任何一筆）
+  -- 7-6 十月爭議、十月人工調整：逐欄＝備份（6 筆有效調整原樣還在；⛔ 這份不作廢、不新增任何一筆）
   v_cnt := (SELECT COUNT(*) FROM (
               ((SELECT d.id AS pk, to_jsonb(d) AS j FROM public.store_settlement_disputes d WHERE d.settlement_id IN (SELECT s.id FROM public.store_monthly_settlements s WHERE s.tenant_id = v_tenant AND s.settlement_month = f.oct)) EXCEPT (SELECT b.pk, b.j FROM ops_price_fix_b3.bk_rows b WHERE b.bk_round = v_round AND b.tbl = 'ssd'))
               UNION ALL
@@ -507,7 +507,7 @@ BEGIN
     '05 十月應收合計', trim_scale(v_pay_before) || ' → ' || trim_scale(v_pay_after) || '（差 ' || trim_scale(v_pay_after - v_pay_before) || '）',
     '06 有蛋小白帳的店', (SELECT string_agg(s.code || ' ' || trim_scale(t.delta), '、' ORDER BY t.delta, s.code)
                             FROM ops_price_fix_b3.fix_targets t JOIN public.stores s ON s.id = t.store_id WHERE t.fix_id = v_fix),
-    '07 人工調整', '十月 4 筆有效調整逐欄＝備份（一筆都沒作廢、沒新增）',
+    '07 人工調整', '十月 6 筆有效調整逐欄＝備份（一筆都沒作廢、沒新增）',
     '08 自我驗算', '✅ 價格版本鏈／11 家差額／蛋小白以外明細不變／其他店（方案' || p_mode || '）／十月爭議與調整／十月以外每個月份逐列不變／蛋小白 8/1～10/1 逐筆不變／每日對帳一致／應收合計 −836，全部通過',
     '09 操作人', p_operator::text));
   INSERT INTO ops_price_fix_b3.after_rows (fix_id, tbl, pk, j)

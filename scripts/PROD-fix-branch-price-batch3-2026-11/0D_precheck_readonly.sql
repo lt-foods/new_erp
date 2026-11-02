@@ -19,7 +19,7 @@
 --    ③三個分店價版本跟 11/2 盤點一模一樣：62（9/28 18:51:00 起）→ 64（10/5 16:38:51 起，請購單核准蓋上去的）
 --      → 42（11/2 11:21:03 起，老闆在商品頁改的），而且前後剛好接上、沒有第四個版本。
 --    ④十月月結每一張都還是「草稿」（只要有一張已送店家／店家有異議／已確認／作廢 → ❌，修正檔會停）。
---    ⑤十月人工調整：還是那 4 筆（+33、+232、−232、−268），修正⛔不作廢、重產後必須原樣還在。
+--    ⑤十月人工調整：還是那 6 筆（#56 −232、#57 +232、#58 −19、#59 −249、#60 +249、#62 −216，合計 −235），修正⛔不作廢、重產後必須原樣還在。
 --    ⑥蛋小白十月的帳：每家店改價後差多少（應該＝11 家、合計 −836、計價數量 38）。
 --    ⑦「重產十月月結」會不會連帶改到別的東西（月結產生器只能整個月、全部店一起重產，見下面說明）。
 --  ★ 會不會動資料：不會。只有 WITH／SELECT。
@@ -54,7 +54,7 @@ fact AS (
          ((DATE '2026-11-01')::timestamp AT TIME ZONE 'Asia/Taipei') AS nov_from,
          11 AS exp_n_store, 12 AS exp_n_lines, (-836)::numeric AS exp_delta, 38::numeric AS exp_net_qty,
          ARRAY[-154,-132,-132,-88,-88,-66,-44,-44,-44,-44,0]::numeric[] AS exp_deltas,
-         ARRAY[-268,-232,33,232]::numeric[] AS exp_adj
+         ARRAY[-249,-232,-216,-19,232,249]::numeric[] AS exp_adj
   -- ▲▲▲ 事實段結束 ▲▲▲
 ),
 tchk AS (   -- 只認「包子媽生鮮小舖」一家（名稱去掉空白後完全相同；0 家或 2 家以上 → 第一列 ❌）
@@ -210,7 +210,7 @@ adj10 AS (SELECT a.* FROM public.store_settlement_adjustments a, tn, fact WHERE 
 ares AS (
   SELECT CASE
            WHEN (SELECT COALESCE(array_agg(amount ORDER BY amount), ARRAY[]::numeric[]) FROM adj10 WHERE status = 'active') <> (SELECT exp_adj FROM fact)
-             THEN '❌ 十月有效人工調整跟 11/2 盤點不一樣（盤點：4 筆 +33、+232、−232、−268），修正檔會停'
+             THEN '❌ 十月有效人工調整跟 11/2 盤點不一樣（盤點：6 筆（#56 −232、#57 +232、#58 −19、#59 −249、#60 +249、#62 −216，合計 −235）），修正檔會停'
          END AS err
 ),
 -- ⑦ 現在「整月重產」會不會連帶改到東西：每家店，月結明細 vs. 現在照價目表即時算的每日對帳（蛋小白還沒改價，所以這裡算的是「蛋小白以外」的變動）
@@ -288,7 +288,7 @@ FROM (
                    || CASE WHEN NOT EXISTS (SELECT 1 FROM pgrst) THEN '；另外「備份位置有沒有開放給網站讀」查不到，需人工確認（第 303 項）' ELSE '' END
               WHEN NOT EXISTS (SELECT 1 FROM pgrst)
               THEN '⚠ 需人工確認：其餘檢查都過，但「備份位置有沒有開放給網站讀」查不到設定（第 303 項），請到 Settings → API 確認 Exposed schemas 沒有 ops_price_fix_b3 再往下'
-              ELSE '✅ 程式關鍵句都一樣、備份位置沒開放、只有一家公司、三個價格版本跟盤點一樣、十月月結全是草稿、人工調整 4 筆一樣、蛋小白 11 家 −836 一樣；現在重產除了蛋小白不會改到別的 → 方案甲、乙都可以走' END AS "結果",
+              ELSE '✅ 程式關鍵句都一樣、備份位置沒開放、只有一家公司、三個價格版本跟盤點一樣、十月月結全是草稿、人工調整 6 筆一樣、蛋小白 11 家 −836 一樣；現在重產除了蛋小白不會改到別的 → 方案甲、乙都可以走' END AS "結果",
          '往下看每一項；❌ 一律先停' AS "說明"
   UNION ALL
   SELECT 100 + c.序, '②程式核對', c.項目,
@@ -366,7 +366,7 @@ FROM (
     FROM sm10 m JOIN public.stores s ON s.id = m.store_id WHERE m.status <> 'draft'
   UNION ALL
   SELECT 6500, '⑤十月人工調整', '有效人工調整（修正⛔不作廢；重產後必須原樣還在）',
-         COALESCE((SELECT err FROM ares), '✅ 4 筆，金額跟盤點一樣'),
+         COALESCE((SELECT err FROM ares), '✅ 6 筆，逐筆金額跟盤點一樣'),
          '有效 ' || (SELECT COUNT(*) FROM adj10 WHERE status = 'active') || ' 筆、合計 ' || trim_scale((SELECT COALESCE(SUM(amount), 0) FROM adj10 WHERE status = 'active'))
            || '；已作廢 ' || (SELECT COUNT(*) FROM adj10 WHERE status <> 'active') || ' 筆。月結產生器只把「有效」調整加總進應收、不會刪改調整本身（20260907030000:886-898）'
   UNION ALL

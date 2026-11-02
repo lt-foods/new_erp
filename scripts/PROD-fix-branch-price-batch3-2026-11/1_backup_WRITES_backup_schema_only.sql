@@ -53,7 +53,7 @@ BEGIN
          ((DATE '2026-11-01')::timestamp AT TIME ZONE 'Asia/Taipei') AS nov_from,
          11 AS exp_n_store, 12 AS exp_n_lines, (-836)::numeric AS exp_delta, 38::numeric AS exp_net_qty,
          ARRAY[-154,-132,-132,-88,-88,-66,-44,-44,-44,-44,0]::numeric[] AS exp_deltas,
-         ARRAY[-268,-232,33,232]::numeric[] AS exp_adj
+         ARRAY[-249,-232,-216,-19,232,249]::numeric[] AS exp_adj
   -- ▲▲▲ 事實段結束 ▲▲▲
   ) x;
 
@@ -192,7 +192,7 @@ SELECT "項目", "數字", "說明" FROM (
   UNION ALL SELECT 2, 'G02907-01 分店價版本', r.counts ->> 'prices', 'price_id＝價格：' || COALESCE(r.counts ->> 'prices_ids', '') || '（11/2 盤點：24666＝62、26805＝64、33876＝42）' FROM r
   UNION ALL SELECT 3, '十月月結表頭', r.counts ->> 'sms', '其中草稿 ' || (r.counts ->> 'sms_draft') || ' 張、應收合計 ' || trim_scale((r.counts ->> 'sms_payable')::numeric) || '（11/2 盤點：20 張全草稿）' FROM r
   UNION ALL SELECT 4, '十月月結明細', r.counts ->> 'smsi', '' FROM r
-  UNION ALL SELECT 5, '十月人工調整', r.counts ->> 'ssa', '其中有效 ' || (r.counts ->> 'ssa_active') || ' 筆、合計 ' || trim_scale((r.counts ->> 'ssa_active_sum')::numeric) || '（11/2 盤點：4 筆 +33、+232、−232、−268，合計 −235）' FROM r
+  UNION ALL SELECT 5, '十月人工調整', r.counts ->> 'ssa', '其中有效 ' || (r.counts ->> 'ssa_active') || ' 筆、合計 ' || trim_scale((r.counts ->> 'ssa_active_sum')::numeric) || '（11/2 盤點：6 筆（#56 −232、#57 +232、#58 −19、#59 −249、#60 +249、#62 −216，合計 −235））' FROM r
   UNION ALL SELECT 6, '十月月結爭議', r.counts ->> 'ssd', '正常應為 0' FROM r
   UNION ALL SELECT 7, '十月以外的月結表頭／明細／調整／爭議',
                    (r.counts ->> 'x_sms') || '／' || (r.counts ->> 'x_smsi') || '／' || (r.counts ->> 'x_ssa') || '／' || (r.counts ->> 'x_ssd'),

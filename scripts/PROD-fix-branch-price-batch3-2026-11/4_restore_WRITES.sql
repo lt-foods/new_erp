@@ -58,7 +58,7 @@ BEGIN
          ((DATE '2026-11-01')::timestamp AT TIME ZONE 'Asia/Taipei') AS nov_from,
          11 AS exp_n_store, 12 AS exp_n_lines, (-836)::numeric AS exp_delta, 38::numeric AS exp_net_qty,
          ARRAY[-154,-132,-132,-88,-88,-66,-44,-44,-44,-44,0]::numeric[] AS exp_deltas,
-         ARRAY[-268,-232,33,232]::numeric[] AS exp_adj
+         ARRAY[-249,-232,-216,-19,232,249]::numeric[] AS exp_adj
   -- ▲▲▲ 事實段結束 ▲▲▲
   ) x;
 
