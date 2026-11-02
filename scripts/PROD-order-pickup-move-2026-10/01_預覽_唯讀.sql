@@ -1,11 +1,16 @@
 -- ============================================================================
 --  01 預覽（只看不改）：客人 4 張還沒取的訂單，取貨店 萬華 → 中和，貼 02 之前先看
---  日期：2026-10-31（第 2 版）　⛔ 審查問題清空之前不要貼 02
+--  日期：2026-10-31（第 4 版：撿貨單「已出倉、萬華實撿 0、沒派車單」那種列放過；第 5 版：放過的列再查會不會叫中和重派；第 6 版：同團同商品的所有採購單都查）　⛔ 審查問題清空之前不要貼 02
 --  整份貼進 Supabase SQL Editor → 執行。每一列＝一張訂單，看最右邊「判斷」：
 --    ✅ 02 會改這張　　✅ 已經改好了（02 貼過）　　❌ 02 會【停】，截圖給 CEO
 --  條件跟 02 的檢查逐條相同（02 任何一張 ❌ 就一張都不改）。
 --  「提醒_派貨草稿萬華格」那欄只是提醒、不擋：草稿是樓下手改的快照，02 不會動它。
 --   不是 0 ＝ 進行中的派貨草稿上萬華那格還有數字；02 貼完後照 03 那一欄的說明，把萬華那格的數字搬到中和那格。
+--  「撿貨單上的萬華列」每一列寫成 撿貨單id(狀態,排X,撿Y,有/沒派車單→放過/擋)：
+--   →放過 ＝ 撿貨單已出倉、萬華那列一件都沒撿、也沒開派車單（貨確定沒送去萬華），不擋 02；→擋 ＝ 02 會停。
+--  「重派風險_採購單」不是「無」＝ 上面「→放過」的那種列，它的採購單還會再收貨、或總倉實收比已排多，
+--   02 改完後派貨工作台可能把這幾件再派一次到中和（貨其實已經在中和）→ 判斷欄 ❌、02 會停。
+--   寫成 撿貨單id 命中採購單：採購單號(狀態,總倉實收X,已排Y)。第 6 版起查的是這張撿貨單的來源採購單＋同團同商品的所有採購單。
 -- ============================================================================
 WITH want(order_no, sku_code, qty) AS (
   VALUES ('GRP-20261007-053-0030', 'G03109-01',  4::numeric),
@@ -66,8 +71,35 @@ xfer AS (  -- 綁在這張單上的派車單，或下單後派往萬華、含同
    GROUP BY o.id
 ),
 wave AS (  -- 總倉撿貨單上，這一團這商品還有萬華那一列（沒取消的撿貨單）
+  -- 只放過一種（10/31 第 4 版）：撿貨單已出倉（shipped）、萬華那列實撿 0（不是空白）、而且沒有派車單
+  --   ＝這列確定沒有貨送去萬華（派車只對實撿 > 0 的列開單：generate_transfer_from_wave 20260717000000:126 起）。
+  --   其他（草稿／撿貨中／已撿完的任何數量、已出倉但有撿到或有派車單、實撿空白）照舊擋。
+  --   ⛔ 放過條件跟 02 第 5 步撿貨單那一段逐字相同。
+  -- 第 5 版（10/31 第 4 輪審查 P1）：放過的列再加一關「改完後派貨工作台會不會叫中和重派」：
+  --   工作台算「已派」用撿貨單上排的 qty（view wave_qty :1016-1027），不是實撿；02 後中和那格會顯示還差（例：3810 需求 4、排 2）。
+  --   只要那張撿貨單的採購單這商品「還有貨可以排」，工作台就可能預填、真的再派一次到中和。所以這兩種【停】：
+  --   ① 採購單狀態不是 fully_received／closed／cancelled（＝draft／sent／partially_received，還會再收貨＝在途，
+  --      view qty_in_transit :1116-1120 只在非 fully_received 時有值；closed／cancelled 工作台本來就不列 :948）；
+  --   ② 總倉實收 > 這張採購單這商品已排（view has_stock_left :1133；view 是逐採購品項比，這裡用整張採購單這商品加總比，只會擋得更多）；
+  --   查不到採購單（撿貨單沒有來源採購單）也算【停】。⛔ 條件跟 02 第 5 步逐字相同。
+  -- 第 6 版（10/31 第 5 輪審查 P1）：不只查來源採購單——同一團同一商品可能連到好幾張採購單（view po_campaigns :956-971），
+  --   工作台會跨採購單分配。所以來源採購單＋所有連到「這一團 × 這商品」的採購單，任一張命中 ①② 就【停】；
+  --   算不出來（NULL）一律算命中。「重派風險_採購單」那欄列出命中的採購單號(狀態,總倉實收,已排)。
   SELECT o.id AS order_id,
-         string_agg(DISTINCT pw.id::text || '(' || pw.status || ')', '、') AS list
+         string_agg('撿貨單' || pw.id::text || '(' || pw.status
+                    || ',排' || pwi.qty::numeric(18,1)
+                    || ',撿' || COALESCE(pwi.picked_qty::numeric(18,1)::text, '空白')
+                    || CASE WHEN pwi.generated_transfer_id IS NOT NULL THEN ',有派車單' ELSE ',沒派車單' END
+                    || CASE WHEN COALESCE(pw.status = 'shipped' AND pwi.picked_qty = 0 AND pwi.generated_transfer_id IS NULL, FALSE)
+                            THEN '→放過' ELSE '→擋' END
+                    || ')', '、' ORDER BY pw.id, pwi.id) AS list,
+         count(*) FILTER (WHERE NOT COALESCE(pw.status = 'shipped' AND pwi.picked_qty = 0 AND pwi.generated_transfer_id IS NULL, FALSE)) AS n_block,
+         -- 第 5 版：放過的那種列，再看改完後工作台會不會叫中和重派（見下面 chk）
+         string_agg('撿貨單' || pw.id::text || ' 命中採購單：'
+                    || CASE WHEN COALESCE(chk.n_src, 0) <> 1 THEN '查不到來源採購單 ' ELSE '' END
+                    || COALESCE(chk.hit_list, ''), '；' ORDER BY pw.id, pwi.id)
+           FILTER (WHERE COALESCE(pw.status = 'shipped' AND pwi.picked_qty = 0 AND pwi.generated_transfer_id IS NULL, FALSE)
+                     AND COALESCE(chk.n_src <> 1 OR chk.any_risk, TRUE)) AS redispatch_list
     FROM o
     JOIN it ON it.order_id = o.id
     JOIN picking_wave_items pwi ON pwi.tenant_id = o.tenant_id
@@ -75,6 +107,63 @@ wave AS (  -- 總倉撿貨單上，這一團這商品還有萬華那一列（沒
                                AND pwi.store_id = (SELECT old_id FROM st)
                                AND pwi.sku_id = ANY (it.skus)
     JOIN picking_waves pw ON pw.id = pwi.wave_id AND pw.status <> 'cancelled'
+    LEFT JOIN LATERAL (  -- 【第 6 版 重派檢查】⛔ 01／02／03 這一段逐字相同（算法照派貨需求表 v_picking_demand_by_po 最新 20261016000000:932）
+      -- 要查的採購單＝這張撿貨單的來源採購單＋依 view po_campaigns（:956-971）連到「這一團 × 這商品」的所有採購單
+      --   （工作台會跨多張採購單分配，任一張還有貨可排就可能叫中和重派）。
+      -- 每張：狀態不是 fully_received／closed／cancelled（＝draft／sent／partially_received，還會再收貨）、
+      --   或總倉實收 > 已排、或算不出來（NULL）→ 算命中。
+      SELECT count(*) FILTER (WHERE p.id = pw.source_po_id) AS n_src,
+             bool_or(p.risky) AS any_risk,
+             string_agg(p.po_no || '(' || p.po_status || ',總倉實收' || p.gr_qty::numeric(18,1)
+                        || ',已排' || p.already_wave::numeric(18,1) || ')', '、' ORDER BY p.id) FILTER (WHERE p.risky) AS hit_list
+        FROM (
+          SELECT q.*,
+                 COALESCE(q.po_status NOT IN ('fully_received', 'closed', 'cancelled') OR q.gr_qty > q.already_wave, TRUE) AS risky
+            FROM (
+              SELECT pox.id, pox.po_no, pox.status AS po_status,
+                     -- 總倉實收：同 view 的 gr_qty（:949-956，confirmed 收貨單的 qty_received），加總這張採購單這商品
+                     (SELECT COALESCE(sum(gri.qty_received), 0)
+                        FROM public.goods_receipt_items gri
+                        JOIN public.goods_receipts gr ON gr.id = gri.gr_id
+                        JOIN public.purchase_order_items poi9 ON poi9.id = gri.po_item_id
+                       WHERE gr.status = 'confirmed'
+                         AND poi9.po_id = pox.id AND poi9.sku_id = pwi.sku_id) AS gr_qty,
+                     -- 已排：同 view 的 po_sku_already_wave（:1051-1071）兩段原文，只取這張採購單這商品
+                     (SELECT COALESCE(sum(u.qty), 0)
+                        FROM ( SELECT pw.source_po_id AS po_id, pwi.sku_id, pwi.qty
+                                 FROM public.picking_wave_items pwi
+                                 JOIN public.picking_waves pw ON pw.id = pwi.wave_id
+                                WHERE pw.status <> 'cancelled' AND pw.source_po_id IS NOT NULL
+                               UNION ALL
+                               SELECT poi.po_id, ti.sku_id, ti.qty_requested AS qty
+                                 FROM public.restock_requests rr
+                                 JOIN public.transfers t ON t.id = rr.linked_transfer_id
+                                 JOIN public.transfer_items ti ON ti.transfer_id = t.id
+                                 JOIN public.purchase_request_items pri ON pri.pr_id = rr.linked_pr_id
+                                 JOIN public.purchase_order_items poi ON poi.id = pri.po_item_id AND poi.sku_id = ti.sku_id
+                                WHERE t.transfer_type = 'hq_to_store' AND t.status <> 'cancelled') u
+                       WHERE u.po_id = pox.id AND u.sku_id = pwi.sku_id) AS already_wave
+                FROM public.purchase_orders pox
+               WHERE pox.id = pw.source_po_id
+                  OR pox.id IN (
+                       SELECT poi8.po_id
+                         FROM ( -- view po_campaigns（:957-971）原文
+                                SELECT DISTINCT u.po_item_id, u.campaign_id
+                                  FROM ( SELECT poi.id AS po_item_id, prc.campaign_id
+                                           FROM public.purchase_order_items poi
+                                           JOIN public.purchase_request_items pri ON pri.po_item_id = poi.id
+                                           JOIN public.purchase_requests pr ON pr.id = pri.pr_id
+                                           JOIN public.purchase_request_campaigns prc ON prc.pr_id = pr.id
+                                         UNION
+                                         SELECT poi.id AS po_item_id, pri.source_campaign_id AS campaign_id
+                                           FROM public.purchase_order_items poi
+                                           JOIN public.purchase_request_items pri ON pri.po_item_id = poi.id
+                                          WHERE pri.source_campaign_id IS NOT NULL) u ) pc
+                         JOIN public.purchase_order_items poi8 ON poi8.id = pc.po_item_id
+                        WHERE pc.campaign_id = pwi.campaign_id AND poi8.sku_id = pwi.sku_id)
+            ) q
+        ) p
+    ) chk ON TRUE
    GROUP BY o.id
 ),
 draft AS (  -- 只提醒：進行中的派貨草稿，萬華那格同商品還有數字
@@ -97,6 +186,7 @@ SELECT o.want_no                                            AS 訂單號,
        it.items                                             AS 品項_數量_狀態,
        COALESCE(xfer.list, '無')                            AS 派車單,
        COALESCE(wave.list, '無')                            AS 撿貨單上的萬華列,
+       COALESCE(wave.redispatch_list, '無')                 AS 重派風險_採購單,
        COALESCE(draft.n, 0)                                 AS 提醒_派貨草稿萬華格,
        st.n_old                                             AS 萬華找到幾家,
        st.n_new                                             AS 中和找到幾家,
@@ -121,7 +211,8 @@ SELECT o.want_no                                            AS 訂單號,
          WHEN it.order_id IS NULL OR it.n_not_pending > 0            THEN '❌ 品項不是全部「等貨中」'
          WHEN it.sig_ok IS NOT TRUE                                  THEN '❌ 品項跟 10/31 確認的不一樣'
          WHEN xfer.list IS NOT NULL                                  THEN '❌ 有派車單'
-         WHEN wave.list IS NOT NULL                                  THEN '❌ 總倉撿貨單上已經排了萬華'
+         WHEN wave.n_block > 0                                       THEN '❌ 總倉撿貨單上已經排了萬華'
+         WHEN wave.redispatch_list IS NOT NULL                       THEN '❌ 改完工作台可能叫中和重派（採購單還會再收貨、或總倉實收比已排多）：' || wave.redispatch_list
          ELSE '✅ 02 會改這張'
        END                                                  AS 判斷
   FROM o
