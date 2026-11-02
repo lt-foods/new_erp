@@ -49,31 +49,17 @@ type Outcome = {
 
 const SOURCE_LABEL = { manual: "人工排", reco: "系統推薦", reco_explore: "系統推薦・新嘗試" } as const;
 
-/** 人工排 vs 系統推薦：同一段時間（11/1 系統上線起）排程出去的團，開完之後的買家數 */
-function compareBySource(outcomes: Outcome[]) {
-  const median = (xs: number[]) => {
-    if (!xs.length) return null;
-    const a = [...xs].sort((x, y) => x - y);
-    const m = Math.floor(a.length / 2);
-    return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
-  };
-  const avg = (xs: number[]) => (xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : null);
-  return (["manual", "reco", "reco_explore"] as const).map((src) => {
-    const rows = outcomes.filter((o) => (o.source ?? "manual") === src);
-    const opened = rows.filter((o) => o.start_date);
-    const done = rows.filter((o) => o.settled && o.buyers_final != null);
-    const finals = done.map((o) => Number(o.buyers_final));
-    return {
-      src,
-      scheduled: rows.length,
-      opened: opened.length,
-      settled: done.length,
-      avgFinal: avg(finals),
-      medFinal: median(finals),
-      avg24: avg(opened.filter((o) => o.buyers_24h != null).map((o) => Number(o.buyers_24h))),
-    };
-  });
-}
+/** 人工排 vs 系統推薦：近 30 天開的總倉團，依來源（rpc_reco_source_compare，20261101000250） */
+type SourceCompare = {
+  source: "manual" | "reco" | "reco_explore";
+  campaigns: number;
+  settled: number;
+  avg_buyers: number | null;
+  median_buyers: number | null;
+  avg_predicted: number | null;
+  beat_rate: number | null;
+  avg_24h: number | null;
+};
 const pct = (v: number | null) => (v == null ? "—" : `${(Number(v) * 100).toFixed(0)}%`);
 const n1 = (v: number | null) => (v == null ? "—" : Number(v).toLocaleString("zh-TW", { maximumFractionDigits: 1 }));
 const md = (s: string | null) => (s ? `${Number(s.slice(5, 7))}/${Number(s.slice(8, 10))}` : "—");
@@ -93,21 +79,24 @@ function RhoLight({ rho }: { rho: number | null }) {
 export default function RecoPerformancePage() {
   const [runs, setRuns] = useState<EvalRun[] | null>(null);
   const [outcomes, setOutcomes] = useState<Outcome[]>([]);
+  const [compare, setCompare] = useState<SourceCompare[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const reload = async () => {
     const sb = getSupabase();
-    const [r, o] = await Promise.all([
+    const [r, o, c] = await Promise.all([
       sb.from("reco_eval_runs").select("*").order("run_at", { ascending: false }).limit(60),
       sb.from("reco_outcomes")
         .select("candidate_id, predicted, low, high, confidence, slate_status, source, start_date, buyers_24h, buyers_7d, buyers_final, settled, candidate:community_product_candidates(product_name_hint)")
         .order("scheduled_at", { ascending: false, nullsFirst: false })
         .limit(1000),
+      sb.rpc("rpc_reco_source_compare", { p_days: 30 }),
     ]);
     if (r.error || o.error) setError((r.error ?? o.error)?.message ?? null);
     else setError(null);
     setRuns((r.data as EvalRun[]) ?? []);
     setOutcomes(((o.data as unknown) as Outcome[]) ?? []);
+    setCompare((c.data as SourceCompare[]) ?? []);
   };
 
   useEffect(() => {
@@ -189,33 +178,38 @@ export default function RecoPerformancePage() {
           <section className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200 px-4 py-2.5 text-sm dark:border-zinc-800">
               <span className="font-medium">人工排 vs 系統推薦</span>
-              <span className="text-xs text-zinc-500">11/1 起從週曆排程出去的團；買家數只算已到貨結束的，團數夠多才有參考價值</span>
+              <span className="text-xs text-zinc-500">近 30 天開的總倉團（不是從系統預選排入的都算人工排）；買家數只算已到貨結束的，預估是開團前算的</span>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full whitespace-nowrap text-sm">
                 <thead className="bg-zinc-50 text-xs text-zinc-500 dark:bg-zinc-900 dark:text-zinc-400">
                   <tr>
                     <th className="px-3 py-2 text-left font-medium">來源</th>
-                    <th className="px-3 py-2 text-right font-medium">排程</th>
-                    <th className="px-3 py-2 text-right font-medium">已開團</th>
+                    <th className="px-3 py-2 text-right font-medium">開團</th>
                     <th className="px-3 py-2 text-right font-medium">已結束</th>
                     <th className="px-3 py-2 text-right font-medium">平均買家</th>
                     <th className="px-3 py-2 text-right font-medium">買家中位數</th>
+                    <th className="px-3 py-2 text-right font-medium">平均預估</th>
+                    <th className="px-3 py-2 text-right font-medium">賣贏預估</th>
                     <th className="px-3 py-2 text-right font-medium">開團 24 小時平均</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {compareBySource(outcomes).map((c) => (
-                    <tr key={c.src} className="border-t border-zinc-100 dark:border-zinc-800">
-                      <td className="px-3 py-2">{SOURCE_LABEL[c.src]}</td>
-                      <td className="px-3 py-2 text-right">{c.scheduled}</td>
-                      <td className="px-3 py-2 text-right">{c.opened}</td>
-                      <td className="px-3 py-2 text-right">{c.settled}</td>
-                      <td className="px-3 py-2 text-right font-semibold">{c.avgFinal != null ? `${n1(c.avgFinal)} 位` : "—"}</td>
-                      <td className="px-3 py-2 text-right">{c.medFinal != null ? `${n1(c.medFinal)} 位` : "—"}</td>
-                      <td className="px-3 py-2 text-right">{c.avg24 != null ? `${n1(c.avg24)} 位` : "—"}</td>
-                    </tr>
-                  ))}
+                  {(["manual", "reco", "reco_explore"] as const).map((src) => {
+                    const c = compare.find((x) => x.source === src);
+                    return (
+                      <tr key={src} className="border-t border-zinc-100 dark:border-zinc-800">
+                        <td className="px-3 py-2">{SOURCE_LABEL[src]}</td>
+                        <td className="px-3 py-2 text-right">{c?.campaigns ?? 0}</td>
+                        <td className="px-3 py-2 text-right">{c?.settled ?? 0}</td>
+                        <td className="px-3 py-2 text-right font-semibold">{c?.avg_buyers != null ? `${n1(c.avg_buyers)} 位` : "—"}</td>
+                        <td className="px-3 py-2 text-right">{c?.median_buyers != null ? `${n1(c.median_buyers)} 位` : "—"}</td>
+                        <td className="px-3 py-2 text-right">{c?.avg_predicted != null ? `${n1(c.avg_predicted)} 位` : "—"}</td>
+                        <td className="px-3 py-2 text-right" title="實際買家 ≥ 開團前預估的比例">{pct(c?.beat_rate ?? null)}</td>
+                        <td className="px-3 py-2 text-right">{c?.avg_24h != null ? `${n1(c.avg_24h)} 位` : "—"}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
