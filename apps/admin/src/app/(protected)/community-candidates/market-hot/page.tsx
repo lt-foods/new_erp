@@ -18,6 +18,8 @@ type HotRow = {
   id: number; source: string; captured_at: string; name: string; price: number | null; sales_30d: number | null;
   revenue: number | null; growth: number | null; category: string | null; shop: string | null; url: string | null;
   kind: string | null; ready: boolean; supplier_matches: SupplierMatch[]; sold: { name: string; cos: number; buyers: number | null; campaigns: number } | null;
+  /** 蝦皮助手自動同步帶的商品小圖 */
+  image: string | null;
 };
 type Batch = { id: number; source: string; file_name: string | null; captured_at: string; rows: number; created_at: string };
 
@@ -33,7 +35,7 @@ const FIELDS: { key: string; label: string; required?: boolean; pattern: RegExp 
   { key: "url", label: "連結", pattern: /連結|網址|鏈接|link|url/i },
   { key: "rank", label: "排名", pattern: /排名|名次|rank/i },
 ];
-const SOURCE_LABEL: Record<string, string> = { shopee: "蝦皮", "1688": "1688", other: "其他" };
+const SOURCE_LABEL: Record<string, string> = { shopeefans: "蝦皮助手", shopee: "蝦皮", "1688": "1688", other: "其他" };
 
 const todayStr = () => {
   const d = new Date();
@@ -144,7 +146,8 @@ export default function MarketHotPage() {
         <div>
           <h1 className="text-xl font-semibold">市場熱門</h1>
           <p className="mt-0.5 text-sm text-zinc-500">
-            匯入蝦皮助手的熱銷榜 → 看廠商有沒有在賣、我們賣過沒有。對上廠商品項的，週曆系統預選會排前面
+            每天 05:23 自動抓蝦皮助手台灣站的月熱銷榜（美食、居家、保健、美妝、母嬰、寵物），也可以自己上傳檔案
+            → 看廠商有沒有在賣、我們賣過沒有。對上廠商品項的，週曆系統預選會排前面
           </p>
         </div>
         <Link href="/community-candidates/calendar"
@@ -266,6 +269,12 @@ export default function MarketHotPage() {
               ) : shown.map((r) => (
                 <tr key={r.id} className="border-t border-zinc-100 align-top dark:border-zinc-800">
                   <td className="min-w-[14rem] px-3 py-2">
+                    <div className="flex gap-2">
+                    {r.image && (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={r.image} alt="" loading="lazy" className="h-10 w-10 shrink-0 rounded border border-zinc-200 object-cover dark:border-zinc-700" />
+                    )}
+                    <div className="min-w-0">
                     {r.url ? (
                       <a href={r.url} target="_blank" rel="noreferrer" className="hover:underline">{r.name}</a>
                     ) : r.name}
@@ -274,6 +283,8 @@ export default function MarketHotPage() {
                       {r.kind && <span className="rounded bg-zinc-100 px-1 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">{r.kind}</span>}
                       {r.shop && <span>{r.shop}</span>}
                       {!r.ready && <span className="text-sky-600">AI 比對中</span>}
+                    </div>
+                    </div>
                     </div>
                   </td>
                   <td className="whitespace-nowrap px-3 py-2 text-right font-semibold">{n0(r.sales_30d)}</td>

@@ -14,11 +14,15 @@
 -- ⑤ 預估數字不變（市場熱度還沒有歷史可驗證），理由多一行「蝦皮熱銷：「X」月銷 N 件」。
 -- ⑥ 預選：有對上熱銷品的候選，照預估排序時 ×1.2（只影響排序，不改預估數字）。
 -- 頁面用 rpc_market_hot_list：每個熱銷品 → 廠商有沒有在賣（候選池）→ 我們賣過沒有。
+-- 自動同步：Edge Function shopeefans-sync 每天台北 05:23 用 Alex 的蝦皮助手帳號抓台灣站月熱銷榜
+--   （美食伴手禮、居家生活、保健、美妝保養、母嬰、寵物各前 200），rpc_market_hot_import_service 寫入，
+--   source = 'shopeefans'；同一資料日重跑會整批換掉。帳密放 Supabase secrets（SHOPEEFANS_USER / _PASSWORD）。
 --
 -- 基底（各自最新版，已 grep）：rpc_ai_kind_claim / rpc_ai_kind_write / reco_compute_features /
 --   reco_predict_v3 @ 20261101000220；_market_ai_tick @ 20261101000230；reco_build_slates @ 20261101000190。
 -- rollback：重跑上述基底版本；
---   DROP FUNCTION public.rpc_market_hot_list(INT), public.rpc_market_hot_import(TEXT, DATE, TEXT, JSONB),
+--   SELECT cron.unschedule('shopeefans-sync');
+--   DROP FUNCTION public.rpc_market_hot_import_service(UUID, TEXT, DATE, JSONB), public.rpc_market_hot_list(INT), public.rpc_market_hot_import(TEXT, DATE, TEXT, JSONB),
 --     public.rpc_market_hot_delete_batch(BIGINT), public.rpc_ai_hot_embed_claim(INT), public.rpc_ai_hot_embed_write(JSONB),
 --     public._reco_market_heat(UUID, extensions.vector, TEXT), public._reco_heat_reason(JSONB, JSONB);
 --   DROP TABLE public.market_hot_products, public.market_hot_batches;
@@ -121,6 +125,49 @@ END;
 $$;
 REVOKE ALL ON FUNCTION public.rpc_market_hot_import(TEXT, DATE, TEXT, JSONB) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.rpc_market_hot_import(TEXT, DATE, TEXT, JSONB) TO authenticated;
+
+-- 自動同步用（shopeefans-sync Edge Function，service_role）：同一來源、同一資料日重跑 → 先刪舊批次
+CREATE OR REPLACE FUNCTION public.rpc_market_hot_import_service(p_tenant UUID, p_source TEXT, p_captured_at DATE, p_rows JSONB)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_batch BIGINT;
+  v_n     INT;
+  v_date  DATE := COALESCE(p_captured_at, (now() AT TIME ZONE 'Asia/Taipei')::date);
+BEGIN
+  IF COALESCE(auth.jwt() ->> 'role', current_user) NOT IN ('service_role', 'postgres') THEN
+    RAISE EXCEPTION 'forbidden';
+  END IF;
+  IF jsonb_typeof(p_rows) <> 'array' OR jsonb_array_length(p_rows) = 0 THEN RAISE EXCEPTION '沒有資料'; END IF;
+  DELETE FROM market_hot_batches WHERE tenant_id = p_tenant AND source = p_source AND captured_at = v_date;
+  INSERT INTO market_hot_batches (tenant_id, source, file_name, captured_at)
+  VALUES (p_tenant, p_source, '自動同步', v_date)
+  RETURNING id INTO v_batch;
+  INSERT INTO market_hot_products (tenant_id, batch_id, source, captured_at, name, price, sales_30d, revenue, growth,
+                                   category, shop, url, rank, raw)
+  SELECT p_tenant, v_batch, p_source, v_date,
+         LEFT(btrim(x ->> 'name'), 300),
+         NULLIF(regexp_replace(COALESCE(x ->> 'price', ''), '[^0-9.]', '', 'g'), '')::numeric,
+         NULLIF(regexp_replace(COALESCE(x ->> 'sales_30d', ''), '[^0-9]', '', 'g'), '')::int,
+         NULLIF(regexp_replace(COALESCE(x ->> 'revenue', ''), '[^0-9.]', '', 'g'), '')::numeric,
+         NULLIF(regexp_replace(COALESCE(x ->> 'growth', ''), '[^0-9.\-]', '', 'g'), '')::numeric,
+         NULLIF(LEFT(btrim(x ->> 'category'), 120), ''),
+         NULLIF(LEFT(btrim(x ->> 'shop'), 120), ''),
+         NULLIF(LEFT(btrim(x ->> 'url'), 500), ''),
+         NULLIF(regexp_replace(COALESCE(x ->> 'rank', ''), '[^0-9]', '', 'g'), '')::int,
+         x -> 'raw'
+    FROM jsonb_array_elements(p_rows) x
+   WHERE COALESCE(btrim(x ->> 'name'), '') <> '';
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  UPDATE market_hot_batches SET rows = v_n WHERE id = v_batch;
+  RETURN jsonb_build_object('batch_id', v_batch, 'rows', v_n);
+END;
+$$;
+REVOKE ALL ON FUNCTION public.rpc_market_hot_import_service(UUID, TEXT, DATE, JSONB) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.rpc_market_hot_import_service(UUID, TEXT, DATE, JSONB) TO service_role;
 
 CREATE OR REPLACE FUNCTION public.rpc_market_hot_delete_batch(p_batch_id BIGINT)
 RETURNS VOID
@@ -335,7 +382,7 @@ AS $$
   SELECT CASE
     WHEN p_p IS NULL OR jsonb_array_length(COALESCE(p_f -> 'heat_matches', '[]'::jsonb)) = 0 THEN p_p
     ELSE p_p || jsonb_build_object('reasons', COALESCE(p_p -> 'reasons', '[]'::jsonb) || to_jsonb(format('%s熱銷：「%s」%s',
-           CASE p_f -> 'heat_matches' -> 0 ->> 'source' WHEN 'shopee' THEN '蝦皮' WHEN '1688' THEN '1688' ELSE '市場' END,
+           CASE p_f -> 'heat_matches' -> 0 ->> 'source' WHEN 'shopee' THEN '蝦皮' WHEN 'shopeefans' THEN '蝦皮' WHEN '1688' THEN '1688' ELSE '市場' END,
            LEFT(p_f -> 'heat_matches' -> 0 ->> 'name', 24),
            CASE WHEN NULLIF(p_f -> 'heat_matches' -> 0 ->> 'sales_30d', '') IS NOT NULL
                 THEN format('月銷 %s 件', p_f -> 'heat_matches' -> 0 ->> 'sales_30d') ELSE '在熱銷榜上' END)))
@@ -698,7 +745,7 @@ REVOKE ALL ON FUNCTION public.reco_build_slates(UUID, INT, INT, INT, INT) FROM P
 CREATE OR REPLACE FUNCTION public.rpc_market_hot_list(p_days INT DEFAULT 45)
 RETURNS TABLE (
   id BIGINT, source TEXT, captured_at DATE, name TEXT, price NUMERIC, sales_30d INT, revenue NUMERIC, growth NUMERIC,
-  category TEXT, shop TEXT, url TEXT, kind TEXT, ready BOOLEAN, supplier_matches JSONB, sold JSONB
+  category TEXT, shop TEXT, url TEXT, kind TEXT, ready BOOLEAN, supplier_matches JSONB, sold JSONB, image TEXT
 )
 LANGUAGE plpgsql
 STABLE
@@ -740,7 +787,8 @@ BEGIN
               FROM product_embeddings e JOIN products pr ON pr.id = e.product_id
              WHERE h.embedding IS NOT NULL AND e.tenant_id = v_tenant
              ORDER BY e.embedding <=> h.embedding LIMIT 1) x
-           WHERE x.cos >= 0.85)
+           WHERE x.cos >= 0.85),
+         h.raw ->> 'productImg'
     FROM market_hot_products h
    WHERE h.tenant_id = v_tenant AND h.captured_at >= current_date - GREATEST(COALESCE(p_days, 45), 1)
    ORDER BY h.captured_at DESC, h.sales_30d DESC NULLS LAST, h.id
@@ -750,3 +798,14 @@ $$;
 REVOKE ALL ON FUNCTION public.rpc_market_hot_list(INT) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.rpc_market_hot_list(INT) TO authenticated;
 
+
+-- 每天台北 05:23 自動抓蝦皮助手月熱銷榜（shopeefans-sync；沒設帳密時 function 會回錯誤、不影響其他）
+SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'shopeefans-sync';
+SELECT cron.schedule('shopeefans-sync', '23 21 * * *', $cron$
+  SELECT net.http_post(
+    url := replace((SELECT decrypted_secret FROM vault.decrypted_secrets WHERE name = 'line_note_worker_url'), 'line-note-worker', 'shopeefans-sync'),
+    headers := jsonb_build_object('Content-Type', 'application/json',
+                                  'x-line-note-secret', (SELECT decrypted_secret FROM vault.decrypted_secrets WHERE name = 'line_note_cron_secret')),
+    body := '{}'::jsonb,
+    timeout_milliseconds := 150000);
+$cron$);
