@@ -6,7 +6,8 @@
 //   2. 商品向量：rpc_ai_product_embed_claim → bge-m3 → rpc_ai_product_embed_write
 //   3. 品項向量＋比對：rpc_ai_item_embed_claim → bge-m3 → rpc_ai_item_embed_write（重算「賣過嗎」、同步候選池）
 //   4. 新品貼標：rpc_product_tag_llm_claim → 文字模型 → rpc_product_tag_llm_write
-//   5. 品類（20261101000220）：rpc_ai_kind_claim → 文字模型 → rpc_ai_kind_write（廠商品項優先、再補商品）
+//   5. 品類（20261101000220）：rpc_ai_kind_claim → 文字模型 → rpc_ai_kind_write（廠商品項 → 市場熱門 → 商品）
+//   2b. 市場熱門榜單向量（20261102000010）：rpc_ai_hot_embed_claim → bge-m3 → rpc_ai_hot_embed_write
 //
 // 呼叫：
 //   { action: "tick" }               pg_cron 'market-ai-tick' 每 5 分鐘（有工作才打）；line-note-worker 讀完
@@ -250,10 +251,13 @@ const KIND_RULES = "每個商品給一個「品類」：最通用、最短的商
   "栗香地瓜→地瓜；台灣本產冷凍秋葵→秋葵；鮮蝦水晶餃→水晶餃；菇菇水晶餃→水晶餃；冰釀滷鴨翅→鴨翅；藤野洗衣機槽清潔粉→洗衣槽清潔劑；" +
   "韓國羅紋百搭襪→襪子；MIZU益生菌潤膚乳液→乳液；起司片→起司片。";
 
+/** 品類標記的 key：item → i123、hot（市場熱門榜單）→ h123、product → p123 */
+const kindKey = (r: { target: string; id: number }) => `${r.target === "item" ? "i" : r.target === "hot" ? "h" : "p"}${r.id}`;
+
 async function labelKinds(rows: { target: string; id: number; name: string }[], vocab: string[]): Promise<Map<string, string>> {
   const system = "你是台灣團購店的商品品類員。" + KIND_RULES +
     (vocab.length ? "\n優先用下面已經用過的品類（意思一樣就用同一個詞）：" + vocab.join("、") : "");
-  const key = (r: { target: string; id: number }) => `${r.target === "item" ? "i" : "p"}${r.id}`;
+  const key = kindKey;
   const user = rows.map((r) => `k=${key(r)} 品名：${clean(r.name, 120)}`).join("\n");
   const out = await chatJson(system, user, KIND_SCHEMA, 2500);
   const m = new Map<string, string>();
@@ -304,6 +308,17 @@ async function tick(started: number) {
     } catch (e) { err("product vectors", e); break; }
   }
 
+  // 2b. 市場熱門榜單向量（20261102000010）：一批最多幾百筆，跟商品向量一樣先補
+  while (until(100_000)) {
+    const rows = await rpc("rpc_ai_hot_embed_claim", { p_limit: 50 }) ?? [];
+    if (!rows.length) break;
+    try {
+      const vecs = await embed(rows.map((r: any) => clean(r.body, 500)));
+      const n = await rpc("rpc_ai_hot_embed_write", { p_rows: rows.map((r: any, i: number) => ({ id: r.id, embedding: vecs[i] })) });
+      stats.hot_vectors = (stats.hot_vectors ?? 0) + (Number(n) || 0);
+    } catch (e) { err("hot vectors", e); break; }
+  }
+
   // 3. 品項向量＋比對（商品向量補齊之後才做，不然比對母體不完整）
   while (!productBacklog && until(105_000)) {
     const rows = await rpc("rpc_ai_item_embed_claim", { p_limit: 50 }) ?? [];
@@ -342,7 +357,7 @@ async function tick(started: number) {
       if (!vocab) vocab = ((await rpc("rpc_ai_kind_vocab", { p_limit: 300 })) ?? []).map((v: any) => String(v.kind));
       const m = await labelKinds(rows, vocab);
       const n = await rpc("rpc_ai_kind_write", {
-        p_rows: rows.map((r: any) => ({ target: r.target, id: r.id, kind: m.get(`${r.target === "item" ? "i" : "p"}${r.id}`) ?? "" })),
+        p_rows: rows.map((r: any) => ({ target: r.target, id: r.id, kind: m.get(kindKey(r)) ?? "" })),
       });
       stats.kinds += Number(n) || 0;
       for (const k of m.values()) if (k && !vocab.includes(k)) vocab.push(k);

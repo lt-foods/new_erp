@@ -467,3 +467,8 @@ verify_jwt = false
 # 廠商群組時呼叫（x-line-note-secret，同 line-note-worker 那把），也接受 service_role bearer；不驗 JWT。
 [functions.market-ai]
 verify_jwt = false
+
+# shopeefans-sync：每天抓蝦皮助手（shopeefans.com）月熱銷榜進「市場熱門」。pg_cron 'shopeefans-sync'
+# 打（x-line-note-secret，同 line-note-worker 那把），也接受 service_role bearer；不驗 JWT。
+[functions.shopeefans-sync]
+verify_jwt = false
