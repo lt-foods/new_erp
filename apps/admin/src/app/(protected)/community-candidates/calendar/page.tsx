@@ -141,18 +141,8 @@ export default function CommunityCandidatesCalendarPage() {
       setError(null);
       setRows((data as CalendarCandidate[]) ?? []);
     }
-    if (!EDIT_ROLES.includes(role)) { setSlates([]); return; }
-    // 系統預選（讀不到不擋週曆本身）
-    const { data: sl } = await getSupabase()
-      .from("reco_slates")
-      .select(
-        "id, slate_date, rank, predicted, reason, pick_kind, candidate:community_product_candidates(id, product_name_hint, raw_text, reco_predictions(buyers, low, high, confidence, reasons))"
-      )
-      .eq("status", "suggested")
-      .gte("slate_date", startStr)
-      .lte("slate_date", endStr)
-      .order("slate_date", { ascending: true })
-      .order("rank", { ascending: true });
+    // 系統預選（還沒排入的）：總部、店長都看得到（rpc_calendar_slates，成本相關的只回給總部）；讀不到不擋週曆本身
+    const { data: sl } = await getSupabase().rpc("rpc_calendar_slates", { p_from: startStr, p_to: endStr });
     setSlates(((sl as unknown) as Slate[]) ?? []);
   }, [days, role]);
 
@@ -402,7 +392,7 @@ export default function CommunityCandidatesCalendarPage() {
           <p className="mt-0.5 text-sm text-zinc-500">
             {editable
               ? "未來 7 天 · 拖拉卡片排序或換日 · 虛線卡是系統預選（每天 8 個依預估買家、2 個「新嘗試」；同款還沒結束的不推），按「排入」才會排程"
-              : "未來 7 天總部排定要開的團（唯讀）"}
+              : "未來 7 天總部排定要開的團（唯讀）・虛線卡是系統推薦、還沒排入的"}
           </p>
         </div>
         {editable && (
@@ -446,6 +436,9 @@ export default function CommunityCandidatesCalendarPage() {
                 ) : (
                   cards.map((r, idx) => <ReadonlyCard key={r.id} card={r} idx={idx} />)
                 )}
+                {slates.filter((sl) => sl.slate_date === key).map((sl) => (
+                  <SlateCard key={`s${sl.id}`} slate={sl} name={slateName(sl)} busy={busy} />
+                ))}
               </DayColumn>
             );
           })}
@@ -499,7 +492,7 @@ export default function CommunityCandidatesCalendarPage() {
         </DndContext>
       )}
 
-      <div className="text-xs text-zinc-400">共 {rows?.length ?? 0} 筆排程{editable ? `・${slates.length} 筆系統預選` : ""}</div>
+      <div className="text-xs text-zinc-400">共 {rows?.length ?? 0} 筆排程・{slates.length} 筆系統預選</div>
     </div>
   );
 }
@@ -663,10 +656,12 @@ function SlateCard({
   slate: Slate;
   name: string;
   busy: boolean;
-  onAccept: (sl: Slate) => void;
-  onSkip: (sl: Slate) => void;
+  /** 沒給（店長唯讀）就不出排入 / 略過，也不連到候選池 */
+  onAccept?: (sl: Slate) => void;
+  onSkip?: (sl: Slate) => void;
 }) {
   const p = slatePrediction(sl);
+  const readOnly = !onAccept || !onSkip;
   const explore = sl.pick_kind === "explore";
   // 新嘗試的理由放類別勝率（「零食餅乾近 4 個月 133 團、87 團賣贏中位數」），照預估的放最像的商品
   const why = explore ? sl.reason : (p?.reasons[0] ?? sl.reason);
@@ -682,10 +677,14 @@ function SlateCard({
           </span>
         )}
       </div>
-      <Link href={`/community-candidates?highlight=${sl.candidate?.id ?? ""}`}
-            className="line-clamp-2 font-medium leading-snug hover:underline">
-        {name}
-      </Link>
+      {readOnly ? (
+        <span className="line-clamp-2 font-medium leading-snug">{name}</span>
+      ) : (
+        <Link href={`/community-candidates?highlight=${sl.candidate?.id ?? ""}`}
+              className="line-clamp-2 font-medium leading-snug hover:underline">
+          {name}
+        </Link>
+      )}
       <div className="flex flex-wrap items-center gap-1.5">
         <ConfidenceChevrons level={p?.confidence} />
         <span className={`text-[11px] font-bold ${confidenceTextColor(p?.confidence)}`} title={`預估約 ${p?.buyers ?? sl.predicted} 位買家`}>{p?.buyers ?? sl.predicted}</span>
@@ -694,16 +693,17 @@ function SlateCard({
       {why && (
         <div className="line-clamp-2 text-[10px] text-zinc-500 dark:text-zinc-400">{why.replace(/^試新：/, "")}</div>
       )}
+      {!readOnly && (
       <div className="flex gap-1 pt-0.5">
         <SpinButton
-          onClick={() => onAccept(sl)}
+          onClick={() => onAccept?.(sl)}
           disabled={busy}
           className="rounded border border-violet-400 bg-white px-1.5 py-0.5 text-[10px] text-violet-700 hover:bg-violet-100 disabled:opacity-50 dark:bg-zinc-900 dark:text-violet-300"
         >
           排入
         </SpinButton>
         <SpinButton
-          onClick={() => onSkip(sl)}
+          onClick={() => onSkip?.(sl)}
           disabled={busy}
           className="ml-auto rounded border border-zinc-300 px-1.5 py-0.5 text-[10px] text-zinc-500 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
           title="不要這一項，之後不會再推"
@@ -711,6 +711,7 @@ function SlateCard({
           略過
         </SpinButton>
       </div>
+      )}
     </div>
   );
 }
