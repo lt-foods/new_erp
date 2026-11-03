@@ -427,11 +427,13 @@ export async function loadBatchStatements(
   onChange(
     sheets.map((sheet) => {
       if (!sheet.data) return sheet;
-      const needsSkus = printedLineSkuIds([sheet.data.items]).length > 0;
+      const neededSkuIds = printedLineSkuIds([sheet.data.items]);
+      const receivableId = sheet.data.settlement.generated_receivable_id;
       const failed: string[] = [];
       if (tenantFailed) failed.push("公司名稱");
-      if (!skus && needsSkus) failed.push("商品編號／品名");
-      if (!receivables && sheet.data.settlement.generated_receivable_id) failed.push("應收單號");
+      // 查詢失敗，或查詢成功但少回這家要用的品名／應收單 → 都不能放行（缺的品名會印成「—」、缺的應收單整段消失）
+      if (neededSkuIds.length > 0 && (!skus || neededSkuIds.some((id) => !skus.has(id)))) failed.push("商品編號／品名");
+      if (receivableId && (!receivables || !receivables.has(receivableId))) failed.push("應收單號");
       return { ...sheet, namesFailed: failed, data: { ...sheet.data, skus: skus ?? emptySkus } };
     }),
   );

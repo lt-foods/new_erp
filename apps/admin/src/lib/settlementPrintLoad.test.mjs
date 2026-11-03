@@ -357,3 +357,35 @@ test("不給印的原因：順序與單張頁相同", () => {
   assert.match(statementPrintBlockReason({ ok: true }, null), /載入中/);
   assert.equal(statementPrintBlockReason({ ok: true }, []), undefined);
 });
+
+test("查詢成功但少回資料：品名少回只擋需要它的那家，其他家可印", async () => {
+  const t = baseTables();
+  // 店C（單 3）要 504；另加一家店也要 504 與 501，店A（單 1）不查品名（只有 HQ 進貨行）
+  t.store_monthly_settlements.push(S(4, 40, 10));
+  t.stores.push({ id: 40, code: "D", name: "測試店D" });
+  t.store_monthly_settlement_items.push(I(4, "air_in", 10, 601));
+  t.skus = t.skus.filter((x) => x.id !== 504); // 查詢成功，但 504 沒回來
+  t.skus.push({ id: 601, sku_code: "C601", product_name: "品601", variant_name: null });
+  const { sheets } = await load(fakeSb(t), [1, 3, 4]);
+  assert.deepEqual(sheets.map((s) => s.namesFailed), [[], ["商品編號／品名"], []]);
+  const st = batchPrintState(sheets, new Set());
+  assert.deepEqual(st.issues.map((i) => i.id), [3]);
+  assert.ok(st.blockReason);
+  assert.equal(batchPrintState(sheets, new Set([3])).blockReason, undefined);
+});
+
+test("查詢成功但少回資料：應收單查不到擋該家，其他家可印", async () => {
+  const t = baseTables();
+  t.store_receivables = []; // 查詢成功但沒回應收單 77
+  const { sheets } = await load(fakeSb(t), [1, 2]);
+  assert.deepEqual(sheets.map((s) => s.namesFailed), [["應收單號"], []]);
+  const st = batchPrintState(sheets, new Set());
+  assert.deepEqual(st.issues.map((i) => i.id), [1]);
+  assert.equal(batchPrintState(sheets, new Set([1])).blockReason, undefined);
+});
+
+test("查詢成功且全部回齊：可印", async () => {
+  const { sheets } = await load(fakeSb(baseTables()), [1, 2, 3]);
+  assert.deepEqual(sheets.map((s) => s.namesFailed), [[], [], []]);
+  assert.equal(batchPrintState(sheets, new Set()).blockReason, undefined);
+});
