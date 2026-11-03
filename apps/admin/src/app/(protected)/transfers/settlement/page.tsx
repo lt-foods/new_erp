@@ -6,7 +6,15 @@ import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import SpinButton from "@/components/SpinButton";
 import { useRole, isHqRole } from "@/lib/role";
+import { withBasePath } from "@/lib/basePath";
 import { isMonthOrEmpty, oneOf, type ListFilterSpec } from "@/lib/listFilters";
+import {
+  printableRows,
+  printBatchHref,
+  printSelectAllIds,
+  printSelectBlockReason,
+  printTargetIds,
+} from "@/lib/settlementPrintLoad";
 import { useSavedListFilters, useSaveListFilters } from "@/lib/useListFilters";
 import StoreSettlementReview from "@/components/StoreSettlementReview";
 import {
@@ -217,6 +225,9 @@ function HqToStoreTab() {
   // 符合目前篩選的總張數（有篩月份才查）；跟載入的張數比，看「全選」會不會漏掉沒載入的店
   const [monthTotal, setMonthTotal] = useState<number | null>(null);
 
+  // 一次列印對帳單的勾選（2026-11-03 老闆裁示）：跟上面送核對的 selected 分開，兩組互不影響
+  const [printSelected, setPrintSelected] = useState<Set<number>>(new Set());
+
   // 「月份已結束」看現在時間：每分鐘更新一次，畫面開著跨過月底（例：11/1 00:00）不用重新整理就能送；
   // 打開確認視窗、按「確定送出」時另外用當下時間再算一次。
   const [now, setNow] = useState(() => new Date());
@@ -302,6 +313,14 @@ function HqToStoreTab() {
     : (rows ?? []).filter((r) => bulkSendBlockReason(r, monthFilter, now) === null);
   const selectedRows = sendableRows.filter((r) => selected.has(r.id));
 
+  // ── 一次列印 ──
+  // 能勾的條件在 lib/settlementPrintLoad.ts。⚠ 不能沿用上面的 loadBlock：月份還沒結束時它是 null（送核對的判斷停在月份那一關）
+  const printLoadBlock = monthFilter ? bulkSendLoadBlockReason(monthTotal, rows?.length ?? 0) : null;
+  const printDisabled = barLoading || sending;
+  const printable = printableRows(rows ?? [], monthFilter, printLoadBlock);
+  const printAllIds = printSelectAllIds(rows ?? [], monthFilter, printLoadBlock);
+  const printIds = printTargetIds(rows ?? [], printSelected, monthFilter, printLoadBlock);
+
   function storeLabel(r: HqToStoreSettlement): string {
     const s = stores.get(r.store_id);
     return s ? `${s.code} ${s.name}` : `#${r.store_id}`;
@@ -312,7 +331,17 @@ function HqToStoreTab() {
     setMonthFilter("");
     setStatusFilter("");
     setSelected(new Set());
+    setPrintSelected(new Set());
     setSendResult(null);
+  }
+
+  function togglePrintSelected(id: number) {
+    setPrintSelected((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }
 
   function toggleSelected(id: number) {
@@ -424,7 +453,7 @@ function HqToStoreTab() {
           <input
             type="month"
             value={monthFilter}
-            onChange={(e) => { setMonthFilter(e.target.value); setSelected(new Set()); setSendResult(null); }}
+            onChange={(e) => { setMonthFilter(e.target.value); setSelected(new Set()); setPrintSelected(new Set()); setSendResult(null); }}
             disabled={sending}
             className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
           />
@@ -433,7 +462,7 @@ function HqToStoreTab() {
           <span className="mb-1 block text-xs text-zinc-500">狀態</span>
           <select
             value={statusFilter}
-            onChange={(e) => { setStatusFilter(e.target.value); setSelected(new Set()); setSendResult(null); }}
+            onChange={(e) => { setStatusFilter(e.target.value); setSelected(new Set()); setPrintSelected(new Set()); setSendResult(null); }}
             disabled={sending}
             className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
           >
@@ -506,6 +535,59 @@ function HqToStoreTab() {
         </div>
       </div>
 
+      {/* 一次列印對帳單：跟上面送核對是兩件事。草稿可以手動勾但全選不選；按下去開新分頁預覽，看過再按列印 */}
+      <div className="flex flex-wrap items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <span className="font-medium">一次列印對帳單</span>
+        <span
+          className={`text-xs ${
+            monthFilter && !barLoading && printLoadBlock ? "font-medium text-red-600 dark:text-red-400" : "text-zinc-500"
+          }`}
+        >
+          {!monthFilter
+            ? "先選月份：在上方「月份篩選」選一個月份"
+            : barLoading
+              ? "載入中…"
+              : printLoadBlock
+                ? printLoadBlock
+                : printable.length === 0
+                  ? `${monthFilter} 沒有可印的月結`
+                  : `已勾 ${printIds.length} / 可印 ${printable.length} 家`}
+        </span>
+        <div className="ml-auto flex flex-wrap gap-2">
+          <SpinButton
+            type="button"
+            onClick={() => setPrintSelected(new Set(printAllIds))}
+            disabled={printDisabled || printAllIds.length === 0}
+            title="草稿不會被全選；要印草稿請自己勾"
+            className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            全選（不含草稿）
+          </SpinButton>
+          <SpinButton
+            type="button"
+            onClick={() => setPrintSelected(new Set())}
+            disabled={printDisabled || printIds.length === 0}
+            className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            清空
+          </SpinButton>
+          {printDisabled || printIds.length === 0 ? (
+            <span className="cursor-not-allowed rounded-md border border-blue-300 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700 opacity-50 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300">
+              📄 列印勾選的 {printIds.length} 家
+            </span>
+          ) : (
+            <a
+              href={withBasePath(printBatchHref(printIds))}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded-md border border-blue-300 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300"
+            >
+              📄 列印勾選的 {printIds.length} 家
+            </a>
+          )}
+        </div>
+      </div>
+
       {sendResult && (
         <div
           className={`rounded-md border p-4 text-sm ${
@@ -540,7 +622,8 @@ function HqToStoreTab() {
         <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
           <thead className="bg-zinc-50 dark:bg-zinc-900">
             <tr>
-              <Th className="w-8"><span className="sr-only">勾選</span></Th>
+              <Th className="w-8 whitespace-nowrap">送核對</Th>
+              <Th className="w-8 whitespace-nowrap">列印</Th>
               <Th>月份</Th>
               <Th>分店</Th>
               <Th className="text-right">應付總倉（分店價）</Th>
@@ -554,15 +637,16 @@ function HqToStoreTab() {
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows === null ? (
-              <tr><td colSpan={10} className="p-3 text-center text-zinc-500">載入中…</td></tr>
+              <tr><td colSpan={11} className="p-3 text-center text-zinc-500">載入中…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={10} className="p-6 text-center text-zinc-500">{loading ? "載入中…" : "尚無結算紀錄。先用上方「產生 / 重算 draft」。"}</td></tr>
+              <tr><td colSpan={11} className="p-6 text-center text-zinc-500">{loading ? "載入中…" : "尚無結算紀錄。先用上方「產生 / 重算 draft」。"}</td></tr>
             ) : rows.map((r) => {
               const s = stores.get(r.store_id);
               const month = r.settlement_month?.slice(0, 7);
               const profit = Number(r.payable_amount) - Number(r.cost_amount ?? 0);
               const blockReason = batchBlock ?? bulkSendBlockReason(r, monthFilter, now);
               const isSelected = blockReason === null && selected.has(r.id);
+              const printBlockReason = printSelectBlockReason(r, monthFilter, printLoadBlock);
               return (
                 <tr key={r.id} className={isSelected ? "bg-blue-50 dark:bg-blue-950/30" : "hover:bg-zinc-50 dark:hover:bg-zinc-900"}>
                   <Td className="w-8">
@@ -578,6 +662,22 @@ function HqToStoreTab() {
                         onChange={() => toggleSelected(r.id)}
                         title={blockReason ?? undefined}
                         aria-label={`勾選 ${s?.name ?? `#${r.store_id}`} ${month} 送店家核對`}
+                        className="disabled:opacity-40"
+                      />
+                    </label>
+                  </Td>
+                  <Td className="w-8">
+                    <label
+                      title={printBlockReason ?? "勾選後可一次列印對帳單"}
+                      className={`inline-flex p-1 ${printBlockReason || printDisabled ? "cursor-not-allowed" : "cursor-pointer"}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={printBlockReason === null && printSelected.has(r.id)}
+                        disabled={printBlockReason !== null || printDisabled}
+                        onChange={() => togglePrintSelected(r.id)}
+                        title={printBlockReason ?? undefined}
+                        aria-label={`勾選 ${s?.name ?? `#${r.store_id}`} ${month} 列印對帳單`}
                         className="disabled:opacity-40"
                       />
                     </label>
@@ -611,7 +711,7 @@ function HqToStoreTab() {
           {rows && rows.length > 0 && (
             <tfoot className="bg-zinc-50 dark:bg-zinc-900">
               <tr>
-                <td colSpan={3} className="px-3 py-2 text-right text-xs text-zinc-500">合計</td>
+                <td colSpan={4} className="px-3 py-2 text-right text-xs text-zinc-500">合計</td>
                 <td className="px-3 py-2 text-right font-mono font-medium text-rose-600">
                   ${totalPayable.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                 </td>
