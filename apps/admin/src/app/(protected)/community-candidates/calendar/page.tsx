@@ -596,7 +596,7 @@ function SortableCard({
             {suggestedTime(idx)}
           </span>
           <Link
-            href={`/community-candidates?highlight=${r.id}`}
+            href={candidateSearchHref(r.id, r.product_name_hint)}
             title={r.product_name_hint ?? "（無商品名）"}
             className="line-clamp-2 font-medium leading-snug hover:underline"
           >
@@ -645,6 +645,15 @@ function SortableCard({
   );
 }
 
+/** 連到選品池：搜尋列帶品名（去掉括號規格，ilike 才對得上），順便定位那一筆 */
+function candidateSearchHref(id: number | null | undefined, name: string | null | undefined): string {
+  const q = (name ?? "").replace(/[（(].*$/, "").trim();
+  const sp = new URLSearchParams();
+  if (id) sp.set("highlight", String(id));
+  if (q) sp.set("q", q);
+  return `/community-candidates?${sp.toString()}`;
+}
+
 /** 系統預選卡（虛線）：預估、理由、排入 / 略過 */
 function SlateCard({
   slate: sl,
@@ -680,7 +689,7 @@ function SlateCard({
       {readOnly ? (
         <span className="line-clamp-2 font-medium leading-snug">{name}</span>
       ) : (
-        <Link href={`/community-candidates?highlight=${sl.candidate?.id ?? ""}`}
+        <Link href={candidateSearchHref(sl.candidate?.id, name)}
               className="line-clamp-2 font-medium leading-snug hover:underline">
           {name}
         </Link>

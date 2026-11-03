@@ -208,10 +208,17 @@ export default function CommunityCandidatesPage() {
   const clearSelected = () => setSelected(new Set());
 
   useEffect(() => {
-    const id = Number(new URLSearchParams(window.location.search).get("highlight"));
+    const sp = new URLSearchParams(window.location.search);
+    const id = Number(sp.get("highlight"));
     if (Number.isFinite(id) && id > 0) {
       setHighlightId(id);
       setTab("all");
+    }
+    // 週曆點品項帶 ?q= 過來：直接填進搜尋列
+    const q = sp.get("q")?.trim();
+    if (q) {
+      setQueryDraft(q);
+      setQuery(q);
     }
   }, []);
 
