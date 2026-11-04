@@ -6,7 +6,8 @@
 //       rpc_line_note_enqueue('list_homes') 讀帳號所在的群組（跟 LINE 記事本頁同一條路）。
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
 import { ChartCard, num } from "@/components/ChartKit";
@@ -282,15 +283,84 @@ export default function SupplierGroupsPage() {
   );
 }
 
+// 廠商下拉：廠商上百家，原生 <select> 翻不到；改成可搜尋（打名稱篩）。
+// 清單用 portal 固定定位到視窗 —— 表格包在 overflow-x-auto 裡，absolute 會被裁掉。
 function SupplierSelect({ suppliers, value, disabled, onChange }: {
   suppliers: Supplier[]; value: number | null; disabled?: boolean; onChange: (v: number | null) => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const anchorRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const close = useCallback(() => { setOpen(false); setQuery(""); }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const r = anchorRef.current?.getBoundingClientRect();
+      if (r) setPos({ top: r.bottom + 4, left: r.left, width: Math.max(r.width, 220) });
+    };
+    place();
+    inputRef.current?.focus();
+    const onClickAway = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (anchorRef.current?.contains(t) || listRef.current?.contains(t)) return;
+      close();
+    };
+    document.addEventListener("mousedown", onClickAway);
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      document.removeEventListener("mousedown", onClickAway);
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, close]);
+
+  const selected = value != null ? suppliers.find((s) => s.id === value) ?? null : null;
+  const q = query.trim().toLowerCase();
+  const filtered = q ? suppliers.filter((s) => s.name.toLowerCase().includes(q)) : suppliers;
+
+  const pick = (v: number | null) => { onChange(v); close(); };
+  const boxCls = "max-w-[160px] rounded border border-zinc-300 bg-white px-1 py-0.5 text-xs dark:border-zinc-700 dark:bg-zinc-900";
+
   return (
-    <select className="max-w-[160px] rounded border border-zinc-300 bg-white px-1 py-0.5 text-xs dark:border-zinc-700 dark:bg-zinc-900"
-            value={value ?? ""} disabled={disabled}
-            onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}>
-      <option value="">（不指定廠商）</option>
-      {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-    </select>
+    <div ref={anchorRef} className="relative inline-block min-w-[120px]">
+      {!open ? (
+        <button type="button" disabled={disabled} onClick={() => setOpen(true)}
+                className={`${boxCls} flex w-full items-center justify-between gap-1 text-left disabled:opacity-50`}>
+          <span className={`truncate ${selected ? "" : "text-zinc-400"}`}>{selected ? selected.name : "（不指定廠商）"}</span>
+          <span className="shrink-0 text-zinc-400">▾</span>
+        </button>
+      ) : (
+        <input ref={inputRef} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜尋廠商名稱"
+               className={`${boxCls} w-full focus:border-zinc-500 focus:outline-none`}
+               onKeyDown={(e) => {
+                 if (e.key === "Escape") close();
+                 else if (e.key === "Enter") { e.preventDefault(); if (filtered.length > 0) pick(filtered[0].id); }
+               }} />
+      )}
+      {open && pos && typeof document !== "undefined" && createPortal(
+        <div ref={listRef} style={{ position: "fixed", top: pos.top, left: pos.left, width: pos.width }}
+             className="z-50 max-h-64 overflow-y-auto rounded-md border border-zinc-200 bg-white text-xs shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+          <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => pick(null)}
+                  className={`block w-full border-b border-zinc-200 px-2 py-1.5 text-left text-zinc-500 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-800 ${value == null ? "bg-blue-50 dark:bg-blue-950" : ""}`}>
+            （不指定廠商）
+          </button>
+          {filtered.length === 0 ? (
+            <p className="px-2 py-1.5 text-zinc-500">{q ? "找不到符合的廠商" : "尚無廠商"}</p>
+          ) : filtered.map((s) => (
+            <button key={s.id} type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => pick(s.id)}
+                    className={`block w-full truncate px-2 py-1.5 text-left hover:bg-zinc-50 dark:hover:bg-zinc-800 ${s.id === value ? "bg-blue-50 dark:bg-blue-950" : ""}`}>
+              {s.name}
+            </button>
+          ))}
+        </div>,
+        document.body,
+      )}
+    </div>
   );
 }
