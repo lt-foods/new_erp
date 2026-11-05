@@ -6,6 +6,7 @@ import {
   canEditItemCap,
   capUpsertArgs,
   itemsWithoutCap,
+  limitedSaveCapProblem,
   limitedTotalCapProblem,
   parseCapInput,
   planItemCaps,
@@ -104,6 +105,47 @@ test("itemsWithoutCap：表單打了總量但還沒存，紅字不能消失；�
   const base = { closeType: "limited", items };
   assert.equal(itemsWithoutCap({ ...base, savedTotalCap: null, formTotalCap: 9 }).length, 2);
   assert.equal(itemsWithoutCap({ ...base, savedTotalCap: 9, formTotalCap: null }).length, 2);
+});
+
+const saveItems = [
+  { cap_qty: 3, is_gift: false, sku_status: "active", label: "草莓" },
+  { cap_qty: null, is_gift: false, sku_status: "active", label: "花生" },
+  { cap_qty: 0, is_gift: false, sku_status: "active", label: "填0的舊資料" },
+];
+const saveBase = { closeType: "limited", salesChannel: "main", totalCap: null, items: saveItems, capsEditable: false };
+
+test("limitedSaveCapProblem：限量、總量空、有品項沒上限就不存，列出品項", () => {
+  const msg = limitedSaveCapProblem(saveBase);
+  assert.match(msg, /花生、填0的舊資料/);
+  assert.doesNotMatch(msg, /草莓/);
+});
+
+test("limitedSaveCapProblem：說明要指到當下真的能填的地方", () => {
+  assert.match(limitedSaveCapProblem(saveBase), /在這裡填總量上限再儲存/);
+  assert.doesNotMatch(limitedSaveCapProblem(saveBase), /按「存」/);
+  assert.match(limitedSaveCapProblem({ ...saveBase, capsEditable: true }), /商品明細」填量上限並按「存」/);
+});
+
+test("limitedSaveCapProblem：全部有上限可以存", () => {
+  assert.equal(limitedSaveCapProblem({ ...saveBase, items: [saveItems[0]] }), null);
+  assert.equal(limitedSaveCapProblem({ ...saveBase, items: [] }), null);
+});
+
+test("limitedSaveCapProblem：贈品、已下架規格不算", () => {
+  const items = [
+    saveItems[0],
+    { cap_qty: null, is_gift: true, sku_status: "active", label: "贈品" },
+    { cap_qty: null, is_gift: false, sku_status: "discontinued", label: "已下架" },
+  ];
+  assert.equal(limitedSaveCapProblem({ ...saveBase, items }), null);
+});
+
+test("limitedSaveCapProblem：其他團型、漂漂館、已有總量的限量團不管", () => {
+  for (const closeType of ["regular", "fast", "food_train"]) {
+    assert.equal(limitedSaveCapProblem({ ...saveBase, closeType }), null, closeType);
+  }
+  assert.equal(limitedSaveCapProblem({ ...saveBase, salesChannel: "piaopiao" }), null);
+  assert.equal(limitedSaveCapProblem({ ...saveBase, totalCap: 9 }), null);
 });
 
 test("limitedTotalCapProblem：限量團總量拒收 0 與小數，留空可以；其他類別不管", () => {

@@ -98,6 +98,30 @@ export function itemsWithoutCap(args: {
   return args.items.filter((i) => !hasCap(i.cap_qty)).map((i) => i.label);
 }
 
+/**
+ * 編輯開團按儲存：要存成主商城限量團、總量又空著時，所有非贈品品項都要有上限，否則團會完全沒上限。
+ * 已下架的規格不算：商品明細不顯示，也沒地方填。
+ * capsEditable＝這個團「已存檔」的狀態下量上限欄能不能改；常規改限量還沒存時不能，只能先填總量。
+ */
+export function limitedSaveCapProblem(args: {
+  closeType: string;
+  salesChannel: string;
+  totalCap: number | null | undefined;
+  items: { cap_qty: number | null; is_gift: boolean | null; sku_status: string; label: string }[];
+  capsEditable: boolean;
+}): string | null {
+  if (args.closeType !== "limited" || args.salesChannel !== "main") return null;
+  if (args.totalCap != null) return null;
+  const missing = args.items
+    .filter((i) => !i.is_gift && i.sku_status !== "discontinued" && !hasCap(i.cap_qty))
+    .map((i) => i.label);
+  if (missing.length === 0) return null;
+  const head = `沒有儲存：限量團的總量上限空著，而且這些品項沒有上限，客人可以一直買：${missing.join("、")}。`;
+  return args.capsEditable
+    ? `${head}請到上方「商品明細」填量上限並按「存」，或在這裡填總量上限。`
+    : `${head}請在這裡填總量上限再儲存。要各口味分開限量：先存成限量團，再回來填每個口味的量上限。`;
+}
+
 /** 編輯開團表單：限量團的總量上限可留空，有填就要是大於 0 的整數。 */
 export function limitedTotalCapProblem(closeType: string, total: number | null | undefined): string | null {
   if (closeType !== "limited" || total == null) return null;
