@@ -189,7 +189,7 @@ export function CampaignItemsTable({
 
   const capWarning = itemsWithoutCap({
     closeType,
-    items: (rows ?? []).map((r) => ({ cap_qty: r.cap_qty, label: skuLabel(r.variant_name, r.sku_code) })),
+    items: (rows ?? []).map((r) => ({ cap_qty: r.cap_qty, is_gift: r.is_gift, sku_status: r.sku_status, label: skuLabel(r.variant_name, r.sku_code) })),
     savedTotalCap,
     formTotalCap: formTotalCap === undefined ? savedTotalCap : formTotalCap,
   });

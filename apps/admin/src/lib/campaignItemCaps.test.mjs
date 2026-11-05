@@ -8,6 +8,7 @@ import {
   itemsWithoutCap,
   limitedSaveCapProblem,
   limitedTotalCapProblem,
+  needsLimitedSaveCapCheck,
   parseCapInput,
   planItemCaps,
   skuLabel,
@@ -86,9 +87,9 @@ test("canEditItemCap：限量＋草稿或開團中＋手機團控那組角色", 
 });
 
 const items = [
-  { cap_qty: 3, label: "草莓" },
-  { cap_qty: null, label: "新口味" },
-  { cap_qty: 0, label: "填0的舊資料" },
+  { cap_qty: 3, is_gift: false, sku_status: "active", label: "草莓" },
+  { cap_qty: null, is_gift: false, sku_status: "active", label: "新口味" },
+  { cap_qty: 0, is_gift: false, sku_status: "active", label: "填0的舊資料" },
 ];
 
 test("itemsWithoutCap：限量團有口味沒上限且總量空著才紅字", () => {
@@ -112,7 +113,7 @@ const saveItems = [
   { cap_qty: null, is_gift: false, sku_status: "active", label: "花生" },
   { cap_qty: 0, is_gift: false, sku_status: "active", label: "填0的舊資料" },
 ];
-const saveBase = { closeType: "limited", salesChannel: "main", totalCap: null, items: saveItems, capsEditable: false };
+const saveBase = { closeType: "limited", salesChannel: "main", status: "open", totalCap: null, items: saveItems, capsEditable: false };
 
 test("limitedSaveCapProblem：限量、總量空、有品項沒上限就不存，列出品項", () => {
   const msg = limitedSaveCapProblem(saveBase);
@@ -146,6 +147,38 @@ test("limitedSaveCapProblem：其他團型、漂漂館、已有總量的限量�
   }
   assert.equal(limitedSaveCapProblem({ ...saveBase, salesChannel: "piaopiao" }), null);
   assert.equal(limitedSaveCapProblem({ ...saveBase, totalCap: 9 }), null);
+});
+
+test("limitedSaveCapProblem：只看這次要存成的狀態，草稿、開團中才擋", () => {
+  for (const status of ["draft", "open"]) {
+    assert.ok(limitedSaveCapProblem({ ...saveBase, status }), status);
+    assert.equal(needsLimitedSaveCapCheck({ ...saveBase, status }), true, status);
+  }
+  for (const status of ["closed", "ordered", "receiving", "ready", "completed", "cancelled"]) {
+    assert.equal(limitedSaveCapProblem({ ...saveBase, status }), null, status);
+    assert.equal(needsLimitedSaveCapCheck({ ...saveBase, status }), false, status);
+  }
+});
+
+test("needsLimitedSaveCapCheck：其他團型、漂漂館、已有總量不用查", () => {
+  assert.equal(needsLimitedSaveCapCheck({ ...saveBase, closeType: "fast" }), false);
+  assert.equal(needsLimitedSaveCapCheck({ ...saveBase, salesChannel: "piaopiao" }), false);
+  assert.equal(needsLimitedSaveCapCheck({ ...saveBase, totalCap: 9 }), false);
+});
+
+test("紅字和儲存檢查同一套：贈品、已下架不算，算到的品項一樣", () => {
+  const mixed = [
+    { cap_qty: 3, is_gift: false, sku_status: "active", label: "草莓" },
+    { cap_qty: null, is_gift: false, sku_status: "active", label: "花生" },
+    { cap_qty: null, is_gift: true, sku_status: "active", label: "贈品" },
+    { cap_qty: 0, is_gift: true, sku_status: "active", label: "贈品填0" },
+    { cap_qty: null, is_gift: false, sku_status: "discontinued", label: "已下架" },
+  ];
+  assert.deepEqual(itemsWithoutCap({ closeType: "limited", items: mixed, savedTotalCap: null, formTotalCap: null }), ["花生"]);
+  assert.match(limitedSaveCapProblem({ ...saveBase, items: mixed }), /客人可以一直買：花生。/);
+  const giftOnly = mixed.filter((i) => i.label !== "花生");
+  assert.deepEqual(itemsWithoutCap({ closeType: "limited", items: giftOnly, savedTotalCap: null, formTotalCap: null }), []);
+  assert.equal(limitedSaveCapProblem({ ...saveBase, items: giftOnly }), null);
 });
 
 test("limitedTotalCapProblem：限量團總量拒收 0 與小數，留空可以；其他類別不管", () => {

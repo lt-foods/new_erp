@@ -6,7 +6,7 @@ import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import { useRole, isAdmin } from "@/lib/role";
 import { CAMPAIGN_STATUS_LABEL, type CampaignStatus } from "@/lib/campaignStatus";
-import { canEditItemCap, limitedSaveCapProblem, limitedTotalCapProblem, skuLabel } from "@/lib/campaignItemCaps";
+import { canEditItemCap, limitedSaveCapProblem, limitedTotalCapProblem, needsLimitedSaveCapCheck, skuLabel } from "@/lib/campaignItemCaps";
 
 export type { CampaignStatus };
 export type CloseType = "regular" | "fast" | "limited" | "food_train";
@@ -121,17 +121,16 @@ export function CampaignForm({
       // 總量 0 在下單檢查裡等於不限，限量團不收
       const totalCapProblem = limitedTotalCapProblem(v.close_type, v.total_cap_qty);
       if (totalCapProblem) throw new Error(totalCapProblem);
-      // 存成限量團又沒填總量：當下重讀品項，有品項沒上限就不存（這段在任何寫入之前）
-      if (v.id != null && v.close_type === "limited" && v.sales_channel === "main" && v.total_cap_qty == null) {
+      // 存成還會賣的限量團又沒填總量：當下重讀品項，有品項沒上限就不存（這段在任何寫入之前）
+      const capCheckArgs = { closeType: v.close_type, salesChannel: v.sales_channel, status: v.status, totalCap: v.total_cap_qty };
+      if (v.id != null && needsLimitedSaveCapCheck(capCheckArgs)) {
         const { data: capRows, error: capErr } = await getSupabase()
           .from("campaign_items")
           .select("cap_qty, is_gift, skus!inner(sku_code, status, variant_name)")
           .eq("campaign_id", v.id);
         if (capErr || !capRows) throw new Error(`讀不到這個團的品項，這次沒有儲存：${capErr?.message ?? "沒有回應"}`);
         const capProblem = limitedSaveCapProblem({
-          closeType: v.close_type,
-          salesChannel: v.sales_channel,
-          totalCap: v.total_cap_qty,
+          ...capCheckArgs,
           items: (capRows as unknown as {
             cap_qty: number | null; is_gift: boolean | null;
             skus: { sku_code: string; status: string; variant_name: string | null };
