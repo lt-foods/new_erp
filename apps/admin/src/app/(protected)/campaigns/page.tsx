@@ -262,6 +262,8 @@ export default function CampaignsListPage() {
   // 否則會把 cache 的 page=3 重置回 1、或把畫面歸零重抓。
   const isInitialRunRef = useRef(campaignsCache != null);
   const [modal, setModal] = useState<{ mode: "edit"; values: CampaignFormValues } | null>(null);
+  // 編輯視窗下方表單目前的總量上限（上方商品明細的紅字要用；可能還沒按儲存）
+  const [formTotalCap, setFormTotalCap] = useState<number | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
   const [copiedStatsId, setCopiedStatsId] = useState<number | null>(null);
   const [resyncTick, setResyncTick] = useState(0);
@@ -586,6 +588,7 @@ export default function CampaignsListPage() {
       .select("id, campaign_no, name, description, status, close_type, start_at, end_at, customer_end_at, pickup_deadline, pickup_days, total_cap_qty, notes, is_for_shop, sales_channel, owner_store_id, auto_open, auto_open_error, line_note_enabled")
       .eq("id", id).maybeSingle();
     if (err || !data) { setError(err?.message ?? "找不到開團"); return; }
+    setFormTotalCap(data.total_cap_qty != null ? Number(data.total_cap_qty) : null);
     setModal({
       mode: "edit",
       values: {
@@ -1555,6 +1558,8 @@ export default function CampaignsListPage() {
             <CampaignItemsTable
               campaignId={modal.values.id!}
               status={modal.values.status}
+              closeType={modal.values.close_type}
+              formTotalCap={formTotalCap}
               onResynced={() => { setResyncTick((t) => t + 1); setReloadTick((t) => t + 1); }}
             />
             <div className="border-t border-zinc-200 pt-4 dark:border-zinc-800">
@@ -1562,6 +1567,7 @@ export default function CampaignsListPage() {
                 initial={modal.values}
                 onSaved={() => { setModal(null); setReloadTick((t) => t + 1); }}
                 onCancel={() => setModal(null)}
+                onTotalCapChange={setFormTotalCap}
               />
             </div>
             <div className="border-t border-zinc-200 pt-4 dark:border-zinc-800">

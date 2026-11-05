@@ -6,6 +6,7 @@ import { cleanRichTextCampaignText } from "@/lib/text";
 import { DatePicker } from "@/components/DatePicker";
 import SpinButton from "@/components/SpinButton";
 import type { CloseType } from "@/components/CampaignForm";
+import { CAP_INPUT_ERROR, parseCapInput, planItemCaps, skuLabel } from "@/lib/campaignItemCaps";
 
 export type StorageType = "room_temp" | "refrigerated" | "frozen" | "meal_train" | null;
 
@@ -103,6 +104,35 @@ export function CreateCampaignModal({
   const [campaignType, setCampaignType] = useState<CloseType | "piaopiao">("regular");
   // 總量上限：限量必填、快團可選（同 CampaignForm）
   const [totalCap, setTotalCap] = useState("");
+  // 限量團每個規格各自的上限：商品有 2 個以上啟用中的規格才問。讀規格失敗不准送出。
+  const [activeSkus, setActiveSkus] = useState<{ id: number; label: string }[] | null>(null);
+  const [skuLoadError, setSkuLoadError] = useState<string | null>(null);
+  const [skuLoadTick, setSkuLoadTick] = useState(0);
+  const [itemCapDrafts, setItemCapDrafts] = useState<Record<number, string>>({});
+
+  const firstProductId = products[0]?.id;
+
+  useEffect(() => {
+    if (campaignType !== "limited" || !firstProductId) return;
+    let alive = true;
+    getSupabase()
+      .from("skus")
+      .select("id, sku_code, variant_name")
+      .eq("product_id", firstProductId)
+      .eq("status", "active")
+      .order("id")
+      .then(({ data, error: err }) => {
+        if (!alive) return;
+        if (err) { setSkuLoadError(err.message); return; }
+        setSkuLoadError(null);
+        setActiveSkus((data ?? []).map((s) => ({ id: s.id as number, label: skuLabel(s.variant_name as string | null, s.sku_code as string) })));
+      });
+    return () => { alive = false; };
+  }, [campaignType, firstProductId, skuLoadTick]);
+
+  const multiFlavor = (activeSkus?.length ?? 0) >= 2;
+  const limitedSkusNotReady = campaignType === "limited" && (activeSkus === null || !!skuLoadError);
+  const anyItemCapFilled = multiFlavor && Object.values(itemCapDrafts).some((v) => v.trim() !== "");
 
   // fetch preview campaign_no
   useEffect(() => {
@@ -165,13 +195,30 @@ export function CreateCampaignModal({
       setError("店家收單不能早於客人收單");
       return;
     }
-    const capQty = totalCap.trim() ? Number(totalCap) : null;
+    if (limitedSkusNotReady) {
+      setError(skuLoadError ? "讀不到商品規格，無法建立限量團，請重新讀取" : "還在讀商品規格，請稍等");
+      return;
+    }
+    let itemCaps: { sku_id: number; cap_qty: number }[] | null = null;
+    if (campaignType === "limited" && multiFlavor) {
+      const plan = planItemCaps(activeSkus ?? [], itemCapDrafts);
+      if (plan.kind === "invalid") {
+        setError(`${plan.bad.join("、")}：${CAP_INPUT_ERROR}`);
+        return;
+      }
+      if (plan.kind === "partial") {
+        setError(`每個口味都要填上限，還沒填：${plan.missing.join("、")}（或全部留空、改填總量上限）`);
+        return;
+      }
+      if (plan.kind === "all") itemCaps = plan.itemCaps;
+    }
+    const capQty = !itemCaps && totalCap.trim() ? Number(totalCap) : null;
     if (capQty != null && !(capQty > 0 && Number.isInteger(capQty))) {
       setError("總量上限要填大於 0 的整數");
       return;
     }
-    if (campaignType === "limited" && capQty == null) {
-      setError("限量團要填總量上限");
+    if (campaignType === "limited" && capQty == null && !itemCaps) {
+      setError(multiFlavor ? "限量團要填每個口味的上限，或填總量上限" : "限量團要填總量上限");
       return;
     }
     setSaving(true); setError(null);
@@ -193,6 +240,8 @@ export function CreateCampaignModal({
         p_close_type: campaignType === "piaopiao" ? "regular" : campaignType,
         p_sales_channel: campaignType === "piaopiao" ? "piaopiao" : "main",
         p_total_cap_qty: campaignType === "limited" || campaignType === "fast" ? capQty : null,
+        // 只有真的用到才帶這個參數，其他類別送出內容跟以前一樣
+        ...(itemCaps ? { p_item_caps: itemCaps } : {}),
       });
       if (err) throw err;
       onCreated(Number(data));
@@ -237,22 +286,89 @@ export function CreateCampaignModal({
           )}
         </label>
 
-        {(campaignType === "limited" || campaignType === "fast") && (
+        {campaignType === "limited" && limitedSkusNotReady && (
+          <div className="flex flex-col gap-1 text-sm">
+            <span className="text-zinc-600 dark:text-zinc-400">上限</span>
+            {skuLoadError ? (
+              <div className="rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+                讀不到商品規格，暫時不能建立限量團：{skuLoadError}
+                <button
+                  type="button"
+                  onClick={() => { setSkuLoadError(null); setActiveSkus(null); setSkuLoadTick((t) => t + 1); }}
+                  className="ml-2 underline"
+                >
+                  重新讀取
+                </button>
+              </div>
+            ) : (
+              <span className="px-1 py-2 text-xs text-zinc-400">讀取商品規格中…</span>
+            )}
+          </div>
+        )}
+
+        {(campaignType === "fast" || (campaignType === "limited" && !limitedSkusNotReady)) && (
           <label className="flex flex-col gap-1 text-sm">
             <span className="text-zinc-600 dark:text-zinc-400">
-              總量上限{campaignType === "limited" ? <span className="text-red-500"> *</span> : "（可選）"}
+              總量上限
+              {campaignType === "limited"
+                ? (anyItemCapFilled ? "" : <span className="text-red-500"> *</span>)
+                : "（可選）"}
             </span>
             <input
               type="number"
               inputMode="numeric"
               min="1"
               step="1"
-              value={totalCap}
+              disabled={campaignType === "limited" && anyItemCapFilled}
+              value={campaignType === "limited" && anyItemCapFilled ? "" : totalCap}
               onChange={(e) => setTotalCap(e.target.value)}
-              placeholder={campaignType === "fast" ? "留空則不限數量；填數字則達標自動關團" : "整團總量上限，例：50"}
-              className={inputCls}
+              placeholder={
+                campaignType === "fast"
+                  ? "留空則不限數量；填數字則達標自動關團"
+                  : anyItemCapFilled
+                    ? "各口味分開算，不用填總量"
+                    : "整團總量上限，例：50"
+              }
+              className={`${inputCls} disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:text-zinc-400 dark:disabled:bg-zinc-900`}
             />
+            {campaignType === "limited" && anyItemCapFilled && (
+              <span className="text-xs text-zinc-500">已填各口味上限：各口味分開算，總量不用填</span>
+            )}
           </label>
+        )}
+
+        {campaignType === "limited" && !limitedSkusNotReady && multiFlavor && (
+          <div className="flex flex-col gap-2 rounded-md border border-zinc-200 p-3 text-sm sm:col-span-2 dark:border-zinc-700">
+            <div>
+              <div className="text-zinc-600 dark:text-zinc-400">每個口味各限量多少</div>
+              <div className="text-xs text-zinc-400">
+                全部填＝各口味分開算；全部留空＝填上面的總量，所有口味共用。只填一部分不能送出。
+              </div>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {(activeSkus ?? []).map((s) => {
+                const raw = itemCapDrafts[s.id] ?? "";
+                const invalid = !parseCapInput(raw).ok;
+                return (
+                  <label key={s.id} className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate" title={s.label}>{s.label}</span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      aria-label={`${s.label} 上限`}
+                      value={raw}
+                      onChange={(e) => {
+                        setError(null);
+                        setItemCapDrafts((prev) => ({ ...prev, [s.id]: e.target.value }));
+                      }}
+                      placeholder="上限"
+                      className={`${inputCls} w-24 text-right ${invalid ? "border-red-400 dark:border-red-700" : ""}`}
+                    />
+                  </label>
+                );
+              })}
+            </div>
+          </div>
         )}
 
         <label className="flex flex-col gap-1 text-sm">

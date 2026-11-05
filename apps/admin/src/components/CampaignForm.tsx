@@ -6,6 +6,7 @@ import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import { useRole, isAdmin } from "@/lib/role";
 import { CAMPAIGN_STATUS_LABEL, type CampaignStatus } from "@/lib/campaignStatus";
+import { canEditItemCap, limitedSaveCapProblem, limitedTotalCapProblem, needsLimitedSaveCapCheck, skuLabel } from "@/lib/campaignItemCaps";
 
 export type { CampaignStatus };
 export type CloseType = "regular" | "fast" | "limited" | "food_train";
@@ -79,11 +80,14 @@ export function CampaignForm({
   onSaved,
   onCancel,
   submitLabel,
+  onTotalCapChange,
 }: {
   initial?: CampaignFormValues;
   onSaved?: (id: number) => void;
   onCancel?: () => void;
   submitLabel?: string;
+  /** 總量上限欄一改就回報目前的值（編輯視窗上方的紅字要用） */
+  onTotalCapChange?: (value: number | null) => void;
 }) {
   const router = useRouter();
   const role = useRole();
@@ -113,6 +117,32 @@ export function CampaignForm({
       }
       if (v.customer_end_at && v.end_at && new Date(v.customer_end_at) > new Date(v.end_at)) {
         throw new Error("客人收單不能晚於店家收單");
+      }
+      // 總量 0 在下單檢查裡等於不限，限量團不收
+      const totalCapProblem = limitedTotalCapProblem(v.close_type, v.total_cap_qty);
+      if (totalCapProblem) throw new Error(totalCapProblem);
+      // 存成還會賣的限量團又沒填總量：當下重讀品項，有品項沒上限就不存（這段在任何寫入之前）
+      const capCheckArgs = { closeType: v.close_type, salesChannel: v.sales_channel, status: v.status, totalCap: v.total_cap_qty };
+      if (v.id != null && needsLimitedSaveCapCheck(capCheckArgs)) {
+        const { data: capRows, error: capErr } = await getSupabase()
+          .from("campaign_items")
+          .select("cap_qty, is_gift, skus!inner(sku_code, status, variant_name)")
+          .eq("campaign_id", v.id);
+        if (capErr || !capRows) throw new Error(`讀不到這個團的品項，這次沒有儲存：${capErr?.message ?? "沒有回應"}`);
+        const capProblem = limitedSaveCapProblem({
+          ...capCheckArgs,
+          items: (capRows as unknown as {
+            cap_qty: number | null; is_gift: boolean | null;
+            skus: { sku_code: string; status: string; variant_name: string | null };
+          }[]).map((r) => ({
+            cap_qty: r.cap_qty != null ? Number(r.cap_qty) : null,
+            is_gift: r.is_gift,
+            sku_status: r.skus.status,
+            label: skuLabel(r.skus.variant_name, r.skus.sku_code),
+          })),
+          capsEditable: canEditItemCap({ closeType: initial?.close_type, status: initial?.status, isAdminRole: admin, role }),
+        });
+        if (capProblem) throw new Error(capProblem);
       }
 
       // 開團驗證：status='open' 時、所有關聯商品需為 'active'（不可有 draft 商品）
@@ -370,7 +400,7 @@ export function CampaignForm({
           >
             <input
               type="number"
-              min="0"
+              min={v.close_type === "limited" ? "1" : "0"}
               step="1"
               placeholder={
                 v.close_type === "fast"
@@ -378,9 +408,18 @@ export function CampaignForm({
                   : "整團總量上限數字"
               }
               value={v.total_cap_qty ?? ""}
-              onChange={(e) => update("total_cap_qty", e.target.value ? Number(e.target.value) : null)}
+              onChange={(e) => {
+                const next = e.target.value ? Number(e.target.value) : null;
+                update("total_cap_qty", next);
+                onTotalCapChange?.(next);
+              }}
               className={inputCls}
             />
+            {v.close_type === "limited" && (
+              <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                有填口味上限時可留空；兩個都填則兩個都會擋。
+              </span>
+            )}
           </Field>
         )}
       </div>
