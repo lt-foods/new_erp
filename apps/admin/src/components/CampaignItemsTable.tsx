@@ -8,6 +8,14 @@ import SpinButton from "@/components/SpinButton";
 import { translateRpcError } from "@/lib/rpcError";
 import { useRole, isAdmin } from "@/lib/role";
 import { htmlToText } from "@/lib/exportShopeeXlsx";
+import {
+  CAP_INPUT_ERROR,
+  canEditItemCap,
+  capUpsertArgs,
+  itemsWithoutCap,
+  parseCapInput,
+  skuLabel,
+} from "@/lib/campaignItemCaps";
 
 type Row = {
   id: number;
@@ -56,17 +64,28 @@ function descriptionText(html: string | null | undefined): string {
 export function CampaignItemsTable({
   campaignId,
   status,
+  closeType,
+  formTotalCap,
   onResynced,
 }: {
   campaignId: number;
   status?: string;
+  /** 已存檔的收單類型；沒傳＝量上限維持只能看 */
+  closeType?: string;
+  /** 下方表單目前的總量上限（可能還沒按儲存） */
+  formTotalCap?: number | null;
   onResynced?: () => void;
 }) {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<ResyncPreview | null>(null);
   const [resyncErr, setResyncErr] = useState<string | null>(null);
+  // 真正的系統裡目前的整團總量（每次 reload 重讀，不用開視窗當下那份）
+  const [savedTotalCap, setSavedTotalCap] = useState<number | null>(null);
+  const [capDrafts, setCapDrafts] = useState<Record<number, string>>({});
+  const [capSavingId, setCapSavingId] = useState<number | null>(null);
   const role = useRole();
+  const canEditCap = canEditItemCap({ closeType, status, isAdminRole: isAdmin(role), role });
   // 僅管理員（owner/admin）可重新同步：對齊 RPC server-side gate
   const canResync = (status === "draft" || status === "open") && isAdmin(role);
   // 贈品設定不看開團狀態：促銷團結單之後才開始取貨，被零元守衛擋下時多半已經
@@ -85,6 +104,15 @@ export function CampaignItemsTable({
       .eq("campaign_id", campaignId)
       .order("sort_order");
     if (err) { setError(err.message); return; }
+    if (closeType === "limited") {
+      const { data: g, error: gErr } = await getSupabase()
+        .from("group_buy_campaigns")
+        .select("total_cap_qty")
+        .eq("id", campaignId)
+        .maybeSingle();
+      if (gErr) { setError(gErr.message); return; }
+      setSavedTotalCap(g?.total_cap_qty != null ? Number(g.total_cap_qty) : null);
+    }
     setRows(
       (data as unknown as Array<{
         id: number; sku_id: number; unit_price: number; cap_qty: number | null;
@@ -111,7 +139,60 @@ export function CampaignItemsTable({
     );
   };
 
-  useEffect(() => { reload(); }, [campaignId]);
+  useEffect(() => { reload(); }, [campaignId, closeType]);
+
+  // 量上限：這欄跟下方表單的「儲存」分開，按了就直接寫進真正的系統。
+  // rpc_upsert_campaign_item 不擋團狀態、又會整個蓋掉上限與備註，所以存之前重讀團與這一列。
+  const saveCap = async (r: Row) => {
+    const parsed = parseCapInput(capDrafts[r.id] ?? "");
+    if (!parsed.ok) { setError(`${skuLabel(r.variant_name, r.sku_code)}：${CAP_INPUT_ERROR}，或留空＝不限`); return; }
+    setError(null);
+    setCapSavingId(r.id);
+    try {
+      const sb = getSupabase();
+      const { data: g, error: gErr } = await sb
+        .from("group_buy_campaigns")
+        .select("status, close_type")
+        .eq("id", campaignId)
+        .maybeSingle();
+      if (gErr) { setError(gErr.message); return; }
+      if (!canEditItemCap({ closeType: g?.close_type as string | undefined, status: g?.status as string | undefined, isAdminRole: isAdmin(role), role })) {
+        setError("這個團現在不能改上限（可能已收單或改了類型），請重新開啟視窗");
+        return;
+      }
+      const { data: latest, error: readErr } = await sb
+        .from("campaign_items")
+        .select("id, campaign_id, sku_id, unit_price, sort_order, notes")
+        .eq("id", r.id)
+        .maybeSingle();
+      if (readErr) { setError(readErr.message); return; }
+      if (!latest) { setError("找不到這一行，請重新開啟視窗"); return; }
+      const { error: err } = await sb.rpc("rpc_upsert_campaign_item", capUpsertArgs({
+        id: latest.id as number,
+        campaign_id: latest.campaign_id as number,
+        sku_id: latest.sku_id as number,
+        unit_price: Number(latest.unit_price),
+        sort_order: latest.sort_order as number,
+        notes: latest.notes as string | null,
+      }, parsed.value));
+      if (err) { setError(translateRpcError(err)); return; }
+      setCapDrafts((prev) => {
+        const next = { ...prev };
+        delete next[r.id];
+        return next;
+      });
+      await reload();
+    } finally {
+      setCapSavingId(null);
+    }
+  };
+
+  const capWarning = itemsWithoutCap({
+    closeType,
+    items: (rows ?? []).map((r) => ({ cap_qty: r.cap_qty, label: skuLabel(r.variant_name, r.sku_code) })),
+    savedTotalCap,
+    formTotalCap: formTotalCap === undefined ? savedTotalCap : formTotalCap,
+  });
 
   // 把開團商品標成／取消標成贈品。**只適用「這一項所有人都是送的」**：
   // 標下去單價會設成 0，之後新建的訂單那一項全部是 $0。
@@ -221,6 +302,19 @@ export function CampaignItemsTable({
         <div className="rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">{error}</div>
       )}
 
+      {capWarning.length > 0 && (
+        <div className="rounded-md border border-red-300 bg-red-50 p-2 text-sm font-medium text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+          ⚠️ 這些口味沒有上限，整團總量也空著，客人可以一直買：{capWarning.join("、")}。
+          請填量上限，或在下方填總量上限並按儲存。
+        </div>
+      )}
+
+      {canEditCap && (
+        <p className="text-xs text-amber-700 dark:text-amber-400">
+          「量上限」這欄按「存」就馬上生效，跟下方表單的「儲存」無關；留空＝不限。
+        </p>
+      )}
+
       <div className="overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
         <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
           <thead className="bg-zinc-50 dark:bg-zinc-900">
@@ -275,7 +369,33 @@ export function CampaignItemsTable({
                   </div>
                 </Td>
                 <Td className="text-right font-mono">${r.unit_price}</Td>
-                <Td className="text-right text-xs text-zinc-500">{r.cap_qty ?? "—"}</Td>
+                <Td className="text-right text-xs text-zinc-500">
+                  {canEditCap ? (
+                    <div className="flex items-center justify-end gap-1.5">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        aria-label={`${skuLabel(r.variant_name, r.sku_code)} 量上限`}
+                        value={capDrafts[r.id] ?? (r.cap_qty != null ? String(r.cap_qty) : "")}
+                        onChange={(e) => setCapDrafts((prev) => ({ ...prev, [r.id]: e.target.value }))}
+                        onKeyDown={(e) => { if (e.key === "Enter" && capDrafts[r.id] !== undefined) void saveCap(r); }}
+                        placeholder="不限"
+                        className={`w-16 rounded-md border bg-white px-2 py-1 text-right text-sm text-zinc-900 focus:outline-none dark:bg-zinc-800 dark:text-zinc-100 ${
+                          parseCapInput(capDrafts[r.id] ?? "").ok ? "border-zinc-300 dark:border-zinc-700" : "border-red-400 dark:border-red-700"
+                        }`}
+                      />
+                      {capDrafts[r.id] !== undefined && (
+                        <SpinButton
+                          onClick={() => saveCap(r)}
+                          disabled={capSavingId === r.id}
+                          className="rounded-md bg-zinc-900 px-2 py-1 text-[11px] font-medium text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900"
+                        >
+                          存
+                        </SpinButton>
+                      )}
+                    </div>
+                  ) : (r.cap_qty ?? "—")}
+                </Td>
                 <Td className="text-xs text-zinc-500">
                   {r.locked_at ? new Date(r.locked_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" }) : "—"}
                 </Td>
