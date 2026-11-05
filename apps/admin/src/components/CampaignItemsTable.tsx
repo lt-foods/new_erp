@@ -302,7 +302,7 @@ export function CampaignItemsTable({
         <div className="rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">{error}</div>
       )}
 
-      {capWarning.length > 0 && (
+      {(status === "draft" || status === "open") && capWarning.length > 0 && (
         <div className="rounded-md border border-red-300 bg-red-50 p-2 text-sm font-medium text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
           ⚠️ 這些口味沒有上限，整團總量也空著，客人可以一直買：{capWarning.join("、")}。
           請填量上限，或在下方填總量上限並按儲存。
