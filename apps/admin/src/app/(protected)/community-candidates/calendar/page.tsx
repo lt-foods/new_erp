@@ -40,7 +40,34 @@ type CalendarCandidate = {
   adopted_sale_price: number | null;
   /** manual = 人工排；reco = 從系統預選排入；reco_explore = 系統預選的新嘗試（rpc_calendar_week，20261101000240） */
   source: "manual" | "reco" | "reco_explore";
+  /** 人工排的卡，系統預選也有選到同一樣（20261107000070）：self = 這筆候選本身有預選；product = 預選裡有向量 ≥0.85 的同款 */
+  also_picked?: {
+    via: "self" | "product";
+    slate_date: string;
+    status: string;
+    pick_kind: "exploit" | "explore";
+    predicted: number | null;
+    item_name: string | null;
+    cos: number | null;
+  } | null;
 };
+
+/** 人工排 + 系統也有選 → 多一個標籤，滑過去看系統哪天選的、預估幾人 */
+function AlsoPickedBadge({ ap }: { ap: CalendarCandidate["also_picked"] }) {
+  if (!ap) return null;
+  const when = ap.slate_date.slice(5).replace("-", "/");
+  const detail = [
+    `系統預選 ${when}${ap.pick_kind === "explore" ? "（新嘗試）" : ""}`,
+    ap.predicted != null ? `預估 ${ap.predicted} 人` : null,
+    ap.via === "product" && ap.item_name ? `同款：${ap.item_name}${ap.cos != null ? `（相似 ${ap.cos}）` : ""}` : null,
+  ].filter(Boolean).join("・");
+  return (
+    <span className="inline-flex rounded px-1.5 py-0.5 text-[10px] bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300"
+          title={detail}>
+      系統也有選
+    </span>
+  );
+}
 
 /** 排程卡上的來源標籤：之後要比較「人排的」跟「系統推薦的」哪個賣得好 */
 function SourceBadge({ source }: { source: CalendarCandidate["source"] }) {
@@ -617,6 +644,7 @@ function SortableCard({
           {ACTION_LABEL[r.owner_action] ?? r.owner_action}
         </span>
         <SourceBadge source={r.source} />
+        <AlsoPickedBadge ap={r.also_picked} />
         {complete && (
           <span className="inline-flex rounded-full bg-teal-100 px-1.5 py-0.5 text-[10px] font-medium text-teal-700 dark:bg-teal-900/30 dark:text-teal-300">
             已補資料
@@ -747,6 +775,7 @@ function ReadonlyCard({ card: r, idx }: { card: CalendarCandidate; idx: number }
       </span>
       <div className="flex flex-wrap gap-1">
         <SourceBadge source={r.source} />
+        <AlsoPickedBadge ap={r.also_picked} />
       </div>
     </div>
   );
