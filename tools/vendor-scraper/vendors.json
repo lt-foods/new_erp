@@ -14,5 +14,13 @@
       "https://www.shop2000.com.tw/有鮮實業/product/683418"
     ],
     "supplier_id": 11
+  },
+  "chenyi": {
+    "name": "晨一",
+    "platform": "shop2000",
+    "urls": [
+      "https://www.shop2000.com.tw/one999/product/599046/1209823"
+    ],
+    "supplier_id": 26
   }
 }

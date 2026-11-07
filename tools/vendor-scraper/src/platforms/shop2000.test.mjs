@@ -7,7 +7,8 @@ const LISTING = `
 <title>測試店 </title>
 <div class=p1_tl >💥本倉現貨💥</div>
 <script>var p='1'; var RecordCount='388';</script>
-<script>document.form1.pc2sn.value='all'</script><script>document.form1.vorder_p.value='依上架日期'</script>
+<select name='pc2sn'><option value='all' >所有次分類<option value='1209823' >⚡現貨速發(可下超過)...161<option value='1209824' >待補貨...34</select>
+<script>document.form1.pc2sn.value='1209823'</script><script>document.form1.vorder_p.value='依上架日期'</script>
 <table id='plist_tb' ><tr><td class=p_td ><div><ul class='p_ul' ><li psn=111 >商品甲 &amp; 乙</li></ul></div>
 <Div class=inlineblock ><img class='pimg' imgstr='|2||3|' psn=111  imgPath='https://img2.shop2000.com.tw/1/p9' src=https://img2.shop2000.com.tw/1/p9/111-2.jpg>
 <div style='display:none;'><a href='https://www.shop2000.com.tw/測試店/product/p111'>商品甲</a></div></Div>
@@ -30,6 +31,8 @@ test("parseListing：分頁資訊與三種商品格式", () => {
   const r = parseListing(LISTING, { baseUrl: "https://www.shop2000.com.tw/測試店/product/1" });
   assert.equal(r.category, "💥本倉現貨💥");
   assert.equal(r.recordCount, 388);
+  assert.equal(r.sub, "1209823");
+  assert.equal(r.subcategory, "⚡現貨速發(可下超過)");
   assert.equal(r.order, "依上架日期");
   assert.equal(r.items.length, 3);
 

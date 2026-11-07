@@ -123,7 +123,8 @@ export class Shop2000Client {
    */
   async scrapeCategory(pc1sn, { maxPages = Infinity, sub = "all", onRawPage } = {}) {
     await this.ensureLogin();
-    const url = this.productUrl(pc1sn);
+    // 次分類：第一頁 GET /product/<pc1sn>/<pc2sn>，之後分頁 POST 帶 pc2sn（頁面本身會把 pc2sn 填回 form1）
+    const url = this.productUrl(sub && sub !== "all" ? `${pc1sn}/${sub}` : pc1sn);
     let html = await this.request(url);
     if (/本分類需有權限方能瀏覽/.test(html)) {
       // cookie 失效 → 重登一次
@@ -134,16 +135,17 @@ export class Shop2000Client {
     }
     const first = parseListing(html, { baseUrl: url });
     onRawPage?.(html, 1);
+    const pc2sn = first.sub || sub || "all";
     const items = [...first.items];
     const total = first.recordCount;
     const pageSize = first.items.length || 1;
     const pages = Math.min(maxPages, Math.max(1, Math.ceil(total / pageSize)));
-    this.log(`分類 ${first.category || pc1sn}：共 ${total} 筆 / ${pages} 頁`);
+    this.log(`分類 ${[first.category || pc1sn, first.subcategory].filter(Boolean).join(" / ")}：共 ${total} 筆 / ${pages} 頁`);
     for (let p = 2; p <= pages; p++) {
       const pageHtml = await this.request(url, {
         method: "POST",
         referer: url,
-        form: { pc2sn: sub, vorder_p: first.order || "", p: String(p), RecordCount: String(total) },
+        form: { pc2sn, vorder_p: first.order || "", p: String(p), RecordCount: String(total) },
       });
       onRawPage?.(pageHtml, p);
       const parsed = parseListing(pageHtml, { baseUrl: url });
@@ -223,6 +225,12 @@ export function parseListing(html, { baseUrl } = {}) {
   const recordCount = num((html.match(/var RecordCount='(\d+)'/) || [])[1]) ?? 0;
   const order = (html.match(/document\.form1\.vorder_p\.value='([^']*)'/) || [])[1] || "";
   const sub = (html.match(/document\.form1\.pc2sn\.value='([^']*)'/) || [])[1] || "";
+  // 次分類名稱：<option value='1209823' >⚡現貨速發(可下超過)...161
+  let subcategory = null;
+  if (sub && sub !== "all") {
+    const m = html.match(new RegExp(`<option value='${sub}'\\s*>([^<]*)`));
+    if (m) subcategory = stripTags(m[1]).replace(/\.\.\.\d+\s*$/, "").trim() || null;
+  }
 
   const items = [];
   const parts = html.split(/<td class=p_td\s*>/);
@@ -252,7 +260,7 @@ export function parseListing(html, { baseUrl } = {}) {
       tags,
     });
   }
-  return { title, category, recordCount, order, sub, items };
+  return { title, category, subcategory, recordCount, order, sub, items };
 }
 
 /** 圖片編號字串 '|1||2||3|' → 大圖網址清單 */
@@ -424,7 +432,7 @@ export const platform = {
   name: "shop2000",
   match(url) {
     const u = new URL(url);
-    return u.hostname.toLowerCase() === "www.shop2000.com.tw" || /\/product\/p?\d+\/?$/.test(u.pathname);
+    return u.hostname.toLowerCase() === "www.shop2000.com.tw" || /\/product\/(p\d+|\d+(\/\d+)?)\/?$/.test(u.pathname);
   },
   createClient(opts) {
     const client = new Shop2000Client(opts);
@@ -432,15 +440,18 @@ export const platform = {
       login: () => client.login(),
       /** url 是分類（/product/<id>）或單一商品（/product/p<id>） */
       async scrape(url, { maxPages = Infinity, limit, detail = true, onRaw } = {}) {
-        const m = new URL(url).pathname.match(/\/product\/(p?)(\d+)\/?$/);
-        if (!m) throw new Error(`看不懂的 shop2000 網址（要 /product/<分類id> 或 /product/p<商品id>）：${url}`);
+        const m = new URL(url).pathname.match(/\/product\/(p?)(\d+)(?:\/(\d+))?\/?$/);
+        if (!m) throw new Error(`看不懂的 shop2000 網址（要 /product/<分類id>[/<次分類id>] 或 /product/p<商品id>）：${url}`);
         let items;
         let category = null;
+        let subcategory = null;
         if (m[1] === "p") {
           items = [EMPTY_ITEM(m[2], client.productUrl(`p${m[2]}`))];
         } else {
-          const listing = await client.scrapeCategory(m[2], { maxPages, onRawPage: (html, p) => onRaw?.(`list-${m[2]}-p${p}.html`, html) });
+          const sub = m[3] || "all";
+          const listing = await client.scrapeCategory(m[2], { maxPages, sub, onRawPage: (html, p) => onRaw?.(`list-${m[2]}-${sub}-p${p}.html`, html) });
           category = listing.category;
+          subcategory = listing.subcategory;
           items = listing.items;
         }
         if (limit) items = items.slice(0, Number(limit));
@@ -461,6 +472,7 @@ export const platform = {
           }
           const row = toRow(it, d);
           if (!row.category) row.category = category;
+          if (!row.subcategory) row.subcategory = subcategory;
           rows.push(row);
         }
         return { category, items: rows };
