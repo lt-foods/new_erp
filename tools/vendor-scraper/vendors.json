@@ -4,13 +4,15 @@
     "platform": "shop2000",
     "urls": [
       "http://www.simpsons.com.tw/product/645845"
-    ]
+    ],
+    "supplier_id": 15
   },
   "youxian": {
     "name": "有鮮實業",
     "platform": "shop2000",
     "urls": [
       "https://www.shop2000.com.tw/有鮮實業/product/683418"
-    ]
+    ],
+    "supplier_id": 11
   }
 }
