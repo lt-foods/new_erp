@@ -25,7 +25,7 @@ export class Shop2000Client {
   constructor({ url, email, password, delayMs = 400, log = () => {} }) {
     const u = new URL(url);
     this.origin = u.origin;
-    this.vdir = decodeURIComponent(vdirOf(u)); // 輸出用解碼後的店名，fetch 時 URL 會自己再編碼
+    this.vdir = vdirOf(u); // 保持 percent-encoding：會進 Referer 標頭，非 ASCII 會被 fetch 拒絕（ByteString）
     this.email = email;
     this.password = password;
     this.delayMs = delayMs;
@@ -92,7 +92,7 @@ export class Shop2000Client {
       method: "POST",
       referer: ref,
       form: {
-        vdir: this.vdir,
+        vdir: decodeURIComponent(this.vdir), // 表單欄位要原文
         http_ref: ref,
         email_mem: this.email,
         mem_pw: this.password,
@@ -374,3 +374,97 @@ export function parseDetail(html, { url } = {}) {
     description_html: descHtml.trim(),
   };
 }
+
+// ---------- 平台 adapter（給 cli.mjs 用的統一介面） ----------
+//
+// 每個平台檔案都要 export 一個 `platform`：
+//   name            平台 key（vendors.json 的 platform 欄）
+//   match(url)      這個網址是不是這個平台（--url 沒指定平台時自動判斷）
+//   createClient({ url, email, password, delayMs, log })
+//     .login()                      測登入
+//     .scrape(url, { maxPages, limit, onRaw })  回 { category, items: [標準欄位列] }
+//
+// 標準欄位列（所有平台都要對齊這一套，CSV 欄位順序見 output.mjs）：
+//   psn, product_code, name, category, subcategory, price_general, price_member, price_original,
+//   stock, options[], spec, short_desc, tags[], free_shipping, shipping_methods[], payment_methods[],
+//   image, images[], url, description, description_html
+
+function toRow(item, detail) {
+  const options = detail?.spec_groups?.length
+    ? detail.spec_groups.flatMap((g) => g.options.map((o) => `${o.name}${o.stock != null ? `=${o.stock}` : ""}`))
+    : item.options.map((o) => `${o.name}${o.stock != null ? `=${o.stock}` : ""}`);
+  return {
+    psn: item.psn,
+    product_code: detail?.product_code ?? null,
+    name: item.name || detail?.name,
+    category: detail?.category ?? null,
+    subcategory: detail?.subcategory ?? null,
+    price_general: detail?.price_general ?? item.price_general,
+    price_member: detail?.price_member ?? item.price_member,
+    price_original: detail?.price_original ?? item.price_original,
+    stock: detail?.stock ?? item.stock,
+    options,
+    spec: detail?.spec_groups ?? null,
+    short_desc: detail?.short_desc || item.short_desc,
+    tags: item.tags,
+    free_shipping: detail?.free_shipping ?? null,
+    shipping_methods: detail?.shipping_methods ?? [],
+    payment_methods: detail?.payment_methods ?? [],
+    image: detail?.image || item.image,
+    images: detail?.images?.length ? detail.images : item.images,
+    url: item.url,
+    description: detail?.description ?? null,
+    description_html: detail?.description_html ?? null,
+  };
+}
+
+const EMPTY_ITEM = (psn, url) => ({ psn, name: "", url, image: null, images: [], short_desc: "", tags: [], options: [], stock: null, price_general: null, price_member: null, price_original: null });
+
+export const platform = {
+  name: "shop2000",
+  match(url) {
+    const u = new URL(url);
+    return u.hostname.toLowerCase() === "www.shop2000.com.tw" || /\/product\/p?\d+\/?$/.test(u.pathname);
+  },
+  createClient(opts) {
+    const client = new Shop2000Client(opts);
+    return {
+      login: () => client.login(),
+      /** url 是分類（/product/<id>）或單一商品（/product/p<id>） */
+      async scrape(url, { maxPages = Infinity, limit, detail = true, onRaw } = {}) {
+        const m = new URL(url).pathname.match(/\/product\/(p?)(\d+)\/?$/);
+        if (!m) throw new Error(`看不懂的 shop2000 網址（要 /product/<分類id> 或 /product/p<商品id>）：${url}`);
+        let items;
+        let category = null;
+        if (m[1] === "p") {
+          items = [EMPTY_ITEM(m[2], client.productUrl(`p${m[2]}`))];
+        } else {
+          const listing = await client.scrapeCategory(m[2], { maxPages, onRawPage: (html, p) => onRaw?.(`list-${m[2]}-p${p}.html`, html) });
+          category = listing.category;
+          items = listing.items;
+        }
+        if (limit) items = items.slice(0, Number(limit));
+        const rows = [];
+        for (let i = 0; i < items.length; i++) {
+          const it = items[i];
+          let d = null;
+          if (detail) {
+            try {
+              d = await client.scrapeDetail(it.psn, { onRaw: (html) => onRaw?.(`p${it.psn}.html`, html) });
+              if (!d.category && category) d.category = category;
+            } catch (e) {
+              client.log(`詳細頁失敗 p${it.psn}：${e.message}`);
+            }
+            if ((i + 1) % 20 === 0 || i === items.length - 1) client.log(`詳細頁 ${i + 1}/${items.length}`);
+          } else if (category) {
+            it.category = category;
+          }
+          const row = toRow(it, d);
+          if (!row.category) row.category = category;
+          rows.push(row);
+        }
+        return { category, items: rows };
+      },
+    };
+  },
+};

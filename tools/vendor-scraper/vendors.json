@@ -1,0 +1,16 @@
+{
+  "simpsons": {
+    "name": "辛普森德日韓",
+    "platform": "shop2000",
+    "urls": [
+      "http://www.simpsons.com.tw/product/645845"
+    ]
+  },
+  "youxian": {
+    "name": "有鮮實業",
+    "platform": "shop2000",
+    "urls": [
+      "https://www.shop2000.com.tw/有鮮實業/product/683418"
+    ]
+  }
+}
