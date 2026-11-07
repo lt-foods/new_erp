@@ -30,5 +30,13 @@
       "https://www.shop2000.com.tw/人和食緣食品批發/product/680350"
     ],
     "supplier_id": 63
+  },
+  "ycb": {
+    "name": "YCB/源和穗",
+    "platform": "shop2000",
+    "urls": [
+      "https://www.shop2000.com.tw/youcanbuy2/product/676417"
+    ],
+    "supplier_id": 32
   }
 }
