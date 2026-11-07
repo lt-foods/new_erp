@@ -86,5 +86,21 @@
       "https://www.shop2000.com.tw/naomi8888"
     ],
     "supplier_id": 113
+  },
+  "fujisan": {
+    "name": "富士山",
+    "platform": "shop2000",
+    "urls": [
+      "https://www.shop2000.com.tw/japanshop999/product/616282"
+    ],
+    "supplier_id": 101
+  },
+  "kangming": {
+    "name": "康名",
+    "platform": "shop2000",
+    "urls": [
+      "https://www.shop2000.com.tw/飛天寶/product/all"
+    ],
+    "supplier_id": 4
   }
 }
