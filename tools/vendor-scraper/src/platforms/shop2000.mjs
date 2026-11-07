@@ -273,6 +273,40 @@ export function parseListing(html, { baseUrl } = {}) {
 }
 
 /**
+ * 這個分類還能不能下單（以名稱判斷）。回傳跳過的理由，可以下單回 null。
+ *   - 一律跳過：下架 / 不上架 / 待處理 / 待重盤 / 重盤後有欠 / 會員需知、須知、守則
+ *   - 過期才跳過：「11/4 收單」「9/3結單」日期已過；「2026年9月商品」月份已過
+ *   - 出清區不跳過（還能下單）
+ * 年份沒寫的 M/D 用今年；離今天超過半年就當成去年 / 明年（12 月看到「1/5 收單」是明年）。
+ */
+export function skipCategoryReason(name, now = new Date()) {
+  const n = String(name ?? "");
+  const m0 = n.match(/下架|不上架|待處理|待重盤|重盤後有欠|會員需知|須知|守則/);
+  if (m0) return `分類名稱含「${m0[0]}」`;
+  // 台北時間的今天（只比日期）
+  const tp = new Date(now.getTime() + 8 * 3600_000);
+  const today = Date.UTC(tp.getUTCFullYear(), tp.getUTCMonth(), tp.getUTCDate());
+  const md = n.match(/(\d{1,2})\s*\/\s*(\d{1,2})\s*(?:收單|結單|截止)/);
+  if (md) {
+    const mon = Number(md[1]) - 1, day = Number(md[2]);
+    if (mon >= 0 && mon < 12 && day >= 1 && day <= 31) {
+      let y = tp.getUTCFullYear();
+      let t = Date.UTC(y, mon, day);
+      const HALF_YEAR = 183 * 86400_000;
+      if (t - today > HALF_YEAR) t = Date.UTC(y - 1, mon, day);
+      else if (today - t > HALF_YEAR) t = Date.UTC(y + 1, mon, day);
+      if (t < today) return `${md[1]}/${md[2]} 已過收單日`;
+    }
+  }
+  const ym = n.match(/(20\d\d)\s*年\s*(\d{1,2})\s*月/);
+  if (ym) {
+    const cur = tp.getUTCFullYear() * 12 + tp.getUTCMonth();
+    if (Number(ym[1]) * 12 + Number(ym[2]) - 1 < cur) return `${ym[1]}年${ym[2]}月 已過`;
+  }
+  return null;
+}
+
+/**
  * 店家首頁（或任一頁）左側選單的第一層分類。
  * 每個分類都有一個隱藏連結 <a style='display:none;' href='…/product/<id>'>名稱</a>，
  * 數量在 topcls 那一列的 <span class=pt9 >...25</span>。
@@ -467,7 +501,7 @@ export const platform = {
     const api = {
       login: () => client.login(),
       /** url 是分類（/product/<id>）或單一商品（/product/p<id>） */
-      async scrape(url, { maxPages = Infinity, limit, detail = true, onRaw } = {}) {
+      async scrape(url, { maxPages = Infinity, limit, detail = true, onRaw, includeAll = false } = {}) {
         const m = new URL(url).pathname.match(/\/product\/(p?)(\d+)(?:\/(\d+))?\/?$/);
         if (!m) {
           // 店家首頁（沒有 /product/…）或 /product/all（全店）→ 自動找出所有分類，逐一抓
@@ -475,12 +509,17 @@ export const platform = {
           if (/\/product\//.test(path) && !/\/product\/all\/?$/i.test(path)) {
             throw new Error(`看不懂的 shop2000 網址（要店家首頁、/product/<分類id>[/<次分類id>] 或 /product/p<商品id>）：${url}`);
           }
-          const cats = await client.discoverCategories();
-          if (!cats.length) throw new Error(`首頁找不到任何分類：${url}`);
+          const found = await client.discoverCategories();
+          if (!found.length) throw new Error(`首頁找不到任何分類：${url}`);
+          const cats = includeAll ? found : found.filter((c) => {
+            const why = skipCategoryReason(c.name);
+            if (why) client.log(`跳過分類「${c.name}」：${why}`);
+            return !why;
+          });
           const all = [];
           const seen = new Set();
           for (const c of cats) {
-            const r = await api.scrape(client.productUrl(c.pc1sn), { maxPages, limit, detail, onRaw });
+            const r = await api.scrape(client.productUrl(c.pc1sn), { maxPages, limit, detail, onRaw, includeAll });
             for (const row of r.items) if (!seen.has(row.psn)) { seen.add(row.psn); all.push(row); }
           }
           return { category: null, items: all };
@@ -518,7 +557,14 @@ export const platform = {
           if (!row.subcategory) row.subcategory = subcategory;
           rows.push(row);
         }
-        return { category, items: rows };
+        if (includeAll) return { category, items: rows };
+        // 商品自己掛的分類 / 次分類過期了也不要（例：統一「2026年9月商品 / 9/3結單商品」）
+        const kept = rows.filter((r) => {
+          const why = skipCategoryReason(r.category) || skipCategoryReason(r.subcategory);
+          return !why;
+        });
+        if (kept.length < rows.length) client.log(`過濾掉 ${rows.length - kept.length} 筆（分類已下架 / 已過收單日）`);
+        return { category, items: kept };
       },
     };
     return api;

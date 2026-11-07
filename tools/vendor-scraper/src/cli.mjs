@@ -6,6 +6,7 @@
 //   node src/cli.mjs scrape [vendor ...] [--out out] [--no-detail] [--limit N] [--pages N] [--delay 400] [--raw] [--images main|all]
 //   node src/cli.mjs images <products.json 路徑> [--mode main|all]      對已經抓好的結果補下載圖片
 //   node src/cli.mjs scrape --url <網址> [--vendor key] [--platform shop2000]   臨時抓一個不在清單裡的頁面
+//   （預設跳過下架 / 待處理 / 已過收單日的分類，要全抓加 --include-all）
 //
 // vendor 是 vendors.json 的 key（不給 = 全部）。每家可以列多個網址（urls），一次全抓。
 // 帳密從 .env 讀：VENDOR_<KEY>_EMAIL / VENDOR_<KEY>_PASSWORD，沒有就退回 <PLATFORM>_EMAIL / <PLATFORM>_PASSWORD。
@@ -84,6 +85,7 @@ async function scrapeVendor(vendor, flags) {
       maxPages: flags.pages ? Number(flags.pages) : Infinity,
       limit: flags.limit ? Number(flags.limit) : undefined,
       detail: flags.detail !== false,
+      includeAll: flags["include-all"] === true,
       onRaw: flags.raw ? (name, html) => rawFiles.push([name, html]) : undefined,
     });
     if (r.category) categories.push({ url, category: r.category, count: r.items.length });
