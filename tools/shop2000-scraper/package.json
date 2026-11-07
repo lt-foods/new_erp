@@ -1,0 +1,18 @@
+{
+  "name": "shop2000-scraper",
+  "private": true,
+  "version": "0.1.0",
+  "description": "shop2000 平台（辛普森德日韓、有鮮實業…）廠商商品爬蟲：用會員帳號登入後抓分類列表＋商品詳細，輸出 JSON / CSV。",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "shop2000": "./src/cli.mjs"
+  },
+  "scripts": {
+    "login": "node --env-file-if-exists=.env src/cli.mjs login",
+    "scrape": "node --env-file-if-exists=.env src/cli.mjs scrape",
+    "test": "node --test src/parse.test.mjs"
+  }
+}
