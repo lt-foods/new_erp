@@ -9,7 +9,7 @@
 
 | 平台 | 廠商 | 備註 |
 |---|---|---|
-| `shop2000` | 辛普森德日韓 `www.simpsons.com.tw`、有鮮實業 `www.shop2000.com.tw/有鮮實業`、晨一 `www.shop2000.com.tw/one999` | 沒登入看不到任何商品；價格依會員等級（辛普森「VVIP 轉批等級」、有鮮「超級VVIP」） |
+| `shop2000` | 辛普森德日韓 `www.simpsons.com.tw`、有鮮實業 `www.shop2000.com.tw/有鮮實業`、晨一 `www.shop2000.com.tw/one999`、人和 `www.shop2000.com.tw/人和食緣食品批發` | 沒登入看不到任何商品；價格依會員等級（辛普森「VVIP 轉批等級」、有鮮「超級VVIP」） |
 
 LINE 記事本那支在 `tools/line-note-scraper/`，是另一條線（LINE 非官方協定），不在這裡。
 

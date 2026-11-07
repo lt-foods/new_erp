@@ -22,5 +22,13 @@
       "https://www.shop2000.com.tw/one999/product/599046/1209823"
     ],
     "supplier_id": 26
+  },
+  "renhe": {
+    "name": "人和",
+    "platform": "shop2000",
+    "urls": [
+      "https://www.shop2000.com.tw/人和食緣食品批發/product/680350"
+    ],
+    "supplier_id": 63
   }
 }
