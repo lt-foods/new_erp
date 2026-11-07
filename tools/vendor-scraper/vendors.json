@@ -46,5 +46,21 @@
       "https://www.shop2000.com.tw/全富水產"
     ],
     "supplier_id": 34
+  },
+  "jinzuan": {
+    "name": "金鑽",
+    "platform": "shop2000",
+    "urls": [
+      "https://www.shop2000.com.tw/FDG"
+    ],
+    "supplier_id": 7
+  },
+  "queenhouse": {
+    "name": "女王家",
+    "platform": "shop2000",
+    "urls": [
+      "https://www.shop2000.com.tw/queenhouse"
+    ],
+    "supplier_id": 6
   }
 }
