@@ -3,6 +3,8 @@
 //
 // 選品 AI，全部走 Cloudflare Workers AI（2026-11-01 老闆決定不用 Claude 排程，20261101000090）：
 //   1. 廠商貼文拆品項（含看圖）：rpc_market_post_claim → 視覺模型 → rpc_market_post_write
+//   1b. 廠商網站商品（20261107000060）：rpc_vendor_site_post_claim 一次 30 個 → 一次呼叫模型拿
+//       norm_name / deadline_text / tags（品名、價格、規格用爬蟲存好的 vendor_item）→ 逐篇 rpc_market_post_write
 //   2. 商品向量：rpc_ai_product_embed_claim → bge-m3 → rpc_ai_product_embed_write
 //   3. 品項向量＋比對：rpc_ai_item_embed_claim → bge-m3 → rpc_ai_item_embed_write（重算「賣過嗎」、同步候選池）
 //   4. 新品貼標：rpc_product_tag_llm_claim → 文字模型 → rpc_product_tag_llm_write
@@ -13,6 +15,7 @@
 //   { action: "tick" }               pg_cron 'market-ai-tick' 每 5 分鐘（有工作才打）；line-note-worker 讀完
 //                                    廠商群組也會馬上叫一次，「立即讀取」幾分鐘內就整理好
 //   { action: "probe", post_ids }    只解析不寫入，回傳模型結果（人工抽查用）
+//   { action: "vendor_probe", post_ids }  廠商網站商品批次版的抽查（只讀不寫，最多 30 篇）
 // 認證：x-line-note-secret = LINE_NOTE_CRON_SECRET（跟 line-note-worker 同一把），或 Bearer service_role key。
 //
 // secrets：CLOUDFLARE_ACCOUNT_ID、CLOUDFLARE_AI_TOKEN（Workers AI 權限），
@@ -267,10 +270,110 @@ async function labelKinds(rows: { target: string; id: number; name: string }[], 
   return m;
 }
 
+// ── 1b. 廠商網站商品：30 個一批（20261107000060） ──────────────────────────────
+// 網站商品一篇一個、品名 / 價格 / 規格已經是結構化的，只缺「標準品名、收單日、標籤」。
+// 一篇一次呼叫時每篇都重送 ~1,300 字的固定指令＋標籤清單；批次後每個商品 ~165 token（11/7 實測 -88%）。
+const VENDOR_SCHEMA = {
+  name: "vendor_items",
+  schema: {
+    type: "object",
+    properties: {
+      items: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "integer" },
+            norm_name: { type: "string" },
+            deadline_text: { type: "string" },
+            tags: { type: "array", items: { type: "string" } },
+          },
+          required: ["id", "norm_name", "tags"],
+        },
+      },
+    },
+    required: ["items"],
+  },
+};
+type VendorRow = { post_id: number; supplier: string | null; item: any; body: string | null };
+type VendorLabel = { norm_name: string | null; deadline_text: string | null; tags: string[] };
+
+/** 爬蟲存好的 vendor_item；舊資料沒有就從貼文文字退回去拆（第一行品名、第二行「會員價 $…」、「規格：」「分類：」） */
+function vendorItem(r: VendorRow) {
+  const it = r.item && typeof r.item === "object" ? r.item : {};
+  const lines = String(r.body ?? "").split("\n").map((l) => l.trim());
+  const line = (prefix: string) => lines.find((l) => l.startsWith(prefix))?.slice(prefix.length).trim() || null;
+  let price: number | null = typeof it.price === "number" && Number.isFinite(it.price) ? it.price : null;
+  if (price == null) {
+    const m = String(r.body ?? "").match(/[$＄]\s*([0-9][0-9,]*)/);
+    if (m) price = Number(m[1].replace(/,/g, ""));
+  }
+  return {
+    name: clean(String(it.name ?? lines[0] ?? "").trim(), 200),
+    price,
+    price_text: it.price_text ? String(it.price_text) : (lines[1]?.startsWith("會員價") ? lines[1] : null),
+    spec: it.spec ? String(it.spec) : line("規格："),
+    category: it.category ? String(it.category) : line("分類："),
+    short_desc: it.short_desc ? String(it.short_desc) : null,
+  };
+}
+
+async function labelVendorItems(rows: VendorRow[], tagList: string, groupOf: Map<string, string>): Promise<Map<number, VendorLabel>> {
+  const system = "你是台灣團購店的選品助理。下面是廠商網站上的商品，一行一個。對每個商品給：\n" +
+    "- norm_name：標準繁體中文核心品名，用空白分隔 2～4 個關鍵詞；簡體轉繁體、英文翻中文、去掉品牌行銷字、規格與收單日期。例：「Shine Muscat 晴王葡萄 2kg」→「麝香葡萄 晴王」。\n" +
+    "- deadline_text：品名或說明裡的收單／截止／出貨日期原文（例：11/16收單），沒有就給空字串。\n" +
+    "- tags：標籤 code。\n每個輸入的 id 都要出現在輸出裡，照輸入順序，不要多也不要少。\n" +
+    TAG_RULES + "\n標籤清單：\n" + tagList;
+  const user = rows.map((r, i) => {
+    const v = vendorItem(r);
+    return `id=${i + 1} 品名：${clean(v.name, 120)}` +
+      (v.spec ? `｜規格：${clean(v.spec, 60)}` : "") +
+      (v.category ? `｜分類：${clean(v.category, 40)}` : "") +
+      (v.short_desc ? `｜說明：${clean(v.short_desc.replace(/\s+/g, " "), 80)}` : "");
+  }).join("\n");
+  const out = await chatJson(system, user, VENDOR_SCHEMA, 3000);
+  const m = new Map<number, VendorLabel>();
+  for (const it of out?.items ?? []) {
+    const r = rows[Number(it?.id) - 1];
+    if (!r) continue;
+    m.set(r.post_id, {
+      norm_name: typeof it.norm_name === "string" && it.norm_name.trim() ? clean(it.norm_name.trim(), 100) : null,
+      deadline_text: typeof it.deadline_text === "string" && it.deadline_text.trim() ? clean(it.deadline_text.trim(), 200) : null,
+      tags: fixTags(Array.isArray(it.tags) ? it.tags.filter((c: any) => typeof c === "string") : [], groupOf),
+    });
+  }
+  return m;
+}
+
+/** 收單日：品名 / 說明裡的「11/16收單」「11/2~11/6結單」原文（模型常常漏給，程式自己抓比較穩） */
+function vendorDeadline(v: { name: string; short_desc: string | null }): string | null {
+  const m = `${v.name} ${v.short_desc ?? ""}`.match(/\d{1,2}\/\d{1,2}(?:\s*[~～-]\s*\d{1,2}\/\d{1,2})?\s*(?:下午|上午)?\s*\d{0,2}\s*點?\s*(?:收單|結單|截止|出貨)/);
+  return m ? m[0].replace(/\s+/g, "") : null;
+}
+
+/** 整批失敗就對半再試一次；還失敗的那半回空 Map（照網站品名寫入、標籤留空，不重試，不會卡住） */
+async function labelVendorBatch(rows: VendorRow[], tagList: string, groupOf: Map<string, string>,
+                                err: (where: string, e: unknown) => void): Promise<Map<number, VendorLabel>> {
+  try {
+    return await labelVendorItems(rows, tagList, groupOf);
+  } catch (e) {
+    err(`vendor batch ${rows[0]?.post_id}+${rows.length}`, e);
+    if (rows.length < 2) return new Map();
+    const m = new Map<number, VendorLabel>();
+    const h = Math.ceil(rows.length / 2);
+    for (const part of [rows.slice(0, h), rows.slice(h)]) {
+      try {
+        for (const [k, v] of await labelVendorItems(part, tagList, groupOf)) m.set(k, v);
+      } catch (e2) { err(`vendor half ${part[0]?.post_id}+${part.length}`, e2); }
+    }
+    return m;
+  }
+}
+
 // ── tick ───────────────────────────────────────────────────────────────────
 async function tick(started: number) {
   const until = (ms: number) => Date.now() - started < ms;
-  const stats: Record<string, any> = { posts: 0, items: 0, product_vectors: 0, item_vectors: 0, tagged: 0, kinds: 0, errors: [] as string[] };
+  const stats: Record<string, any> = { posts: 0, items: 0, vendor_posts: 0, vendor_labeled: 0, product_vectors: 0, item_vectors: 0, tagged: 0, kinds: 0, errors: [] as string[] };
   const err = (where: string, e: unknown) => { const m = `${where}: ${String((e as any)?.message ?? e).slice(0, 300)}`; console.error(m); stats.errors.push(m); };
   const tags = await loadTags();
   const tagList = tagText(tags);
@@ -289,6 +392,27 @@ async function tick(started: number) {
         err(`post ${p.post_id}`, e);
         await rpc("rpc_market_post_write", { p_post_id: p.post_id, p_items: [], p_error: String((e as any)?.message ?? e).slice(0, 400) }).catch(() => {});
       }
+    }
+  }
+
+  // 1b. 廠商網站商品（30 個一批，20261107000060）。一批約 25 秒；新開始的批次最晚在第 60 秒
+  while (until(60_000)) {
+    let rows: VendorRow[] = [];
+    try { rows = await rpc("rpc_vendor_site_post_claim", { p_limit: 30 }) ?? []; } catch (e) { err("vendor claim", e); break; }
+    if (!rows.length) break;
+    const labels = await labelVendorBatch(rows, tagList, groupOf, err);
+    for (const r of rows) {
+      const v = vendorItem(r);
+      const lab = labels.get(r.post_id);
+      const items = v.name ? [{
+        item_name: v.name, norm_name: lab?.norm_name ?? null, price: v.price, price_text: v.price_text,
+        spec: v.spec, deadline_text: vendorDeadline(v) ?? lab?.deadline_text ?? null, tags: lab?.tags ?? [],
+      }] : [];
+      try {
+        const n = await rpc("rpc_market_post_write", { p_post_id: r.post_id, p_items: items, p_error: null });
+        stats.vendor_posts++; stats.items += Number(n) || 0;
+        if (lab) stats.vendor_labeled++;
+      } catch (e) { err(`vendor write ${r.post_id}`, e); }
     }
   }
 
@@ -401,6 +525,18 @@ Deno.serve(async (req) => {
         } catch (e) { out.push({ post_id: p.id, error: String((e as any)?.message ?? e) }); }
       }
       return json({ model: CHAT_MODEL, results: out, ms: Date.now() - started });
+    }
+    if (action === "vendor_probe") {
+      // 唯讀：廠商網站商品批次版抽查（不寫 DB）
+      const ids = (Array.isArray(body.post_ids) ? body.post_ids : []).map(Number).filter(Number.isInteger).slice(0, 30);
+      const tagRows = await loadTags();
+      const groupOf = new Map(tagRows.map((t) => [t.code, t.tag_group]));
+      const posts = await rest(`line_note_market_posts?id=in.(${ids.join(",") || 0})&source=eq.vendor_site&select=id,vendor_item,text&order=id`);
+      const rows: VendorRow[] = (posts ?? []).map((p: any) => ({ post_id: p.id, supplier: null, item: p.vendor_item, body: p.text }));
+      const errors: string[] = [];
+      const m = await labelVendorBatch(rows, tagText(tagRows), groupOf, (w, e) => errors.push(`${w}: ${String((e as any)?.message ?? e).slice(0, 200)}`));
+      return json({ model: CHAT_MODEL, ms: Date.now() - started, errors,
+        results: rows.map((r) => ({ post_id: r.post_id, item: vendorItem(r), label: m.get(r.post_id) ?? null })) });
     }
     if (action === "kind_probe") {
       // 唯讀：給幾個品名看會標成什麼品類（不寫 DB）
