@@ -160,6 +160,15 @@ export class Shop2000Client {
     return { ...first, items: uniq, pages };
   }
 
+  /** 店家首頁 → 第一層分類清單（登入後才看得到「限」會員分類） */
+  async discoverCategories() {
+    await this.ensureLogin();
+    const html = await this.request(this.storeHome || this.origin);
+    const cats = parseCategories(html);
+    this.log(`首頁找到 ${cats.length} 個分類：${cats.map((c) => `${c.name}${c.count != null ? `(${c.count})` : ""}`).join("、")}`);
+    return cats;
+  }
+
   /** 抓商品詳細頁 /product/p<psn> */
   async scrapeDetail(psn, { onRaw } = {}) {
     await this.ensureLogin();
@@ -261,6 +270,25 @@ export function parseListing(html, { baseUrl } = {}) {
     });
   }
   return { title, category, subcategory, recordCount, order, sub, items };
+}
+
+/**
+ * 店家首頁（或任一頁）左側選單的第一層分類。
+ * 每個分類都有一個隱藏連結 <a style='display:none;' href='…/product/<id>'>名稱</a>，
+ * 數量在 topcls 那一列的 <span class=pt9 >...25</span>。
+ */
+export function parseCategories(html) {
+  const out = new Map();
+  for (const m of html.matchAll(/<a style='display:none;'\s*href='[^']*\/product\/(\d+)'\s*>([^<]*)<\/a>/g)) {
+    out.set(m[1], { pc1sn: m[1], name: stripTags(m[2]), count: null });
+  }
+  for (const m of html.matchAll(/topcls\('(\d+)',''\)[^>]*>([^<]*)(?:<span class=pt9\s*>\.\.\.(\d+)<\/span>)?/g)) {
+    const c = out.get(m[1]) ?? { pc1sn: m[1], name: stripTags(m[2]), count: null };
+    if (!c.name) c.name = stripTags(m[2]);
+    if (m[3]) c.count = Number(m[3]);
+    out.set(m[1], c);
+  }
+  return [...out.values()];
 }
 
 /** 圖片編號字串 '|1||2||3|' → 大圖網址清單 */
@@ -436,12 +464,26 @@ export const platform = {
   },
   createClient(opts) {
     const client = new Shop2000Client(opts);
-    return {
+    const api = {
       login: () => client.login(),
       /** url 是分類（/product/<id>）或單一商品（/product/p<id>） */
       async scrape(url, { maxPages = Infinity, limit, detail = true, onRaw } = {}) {
         const m = new URL(url).pathname.match(/\/product\/(p?)(\d+)(?:\/(\d+))?\/?$/);
-        if (!m) throw new Error(`看不懂的 shop2000 網址（要 /product/<分類id>[/<次分類id>] 或 /product/p<商品id>）：${url}`);
+        if (!m) {
+          // 店家首頁（沒有 /product/…）→ 自動找出所有分類，逐一抓
+          if (/\/product\//.test(new URL(url).pathname)) {
+            throw new Error(`看不懂的 shop2000 網址（要店家首頁、/product/<分類id>[/<次分類id>] 或 /product/p<商品id>）：${url}`);
+          }
+          const cats = await client.discoverCategories();
+          if (!cats.length) throw new Error(`首頁找不到任何分類：${url}`);
+          const all = [];
+          const seen = new Set();
+          for (const c of cats) {
+            const r = await api.scrape(client.productUrl(c.pc1sn), { maxPages, limit, detail, onRaw });
+            for (const row of r.items) if (!seen.has(row.psn)) { seen.add(row.psn); all.push(row); }
+          }
+          return { category: null, items: all };
+        }
         let items;
         let category = null;
         let subcategory = null;
@@ -478,5 +520,6 @@ export const platform = {
         return { category, items: rows };
       },
     };
+    return api;
   },
 };

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseListing, parseDetail, imageList, vdirOf, stripTags } from "./shop2000.mjs";
+import { parseListing, parseDetail, parseCategories, imageList, vdirOf, stripTags } from "./shop2000.mjs";
 
 // 從 2026-11-07 實際頁面截下來、去識別化的最小片段（結構原封不動）。
 const LISTING = `
@@ -112,4 +112,16 @@ test("vdirOf / imageList / stripTags", () => {
   assert.deepEqual(imageList("https://x/p1", "7", "|1||10|"), ["https://x/p1/7-1o.jpg", "https://x/p1/7-10o.jpg"]);
   assert.deepEqual(imageList(null, "7", "|1|"), []);
   assert.equal(stripTags("a&nbsp;b<br>c\r\n<div>d</div>"), "a b\nc\nd");
+});
+
+test("parseCategories：首頁左側選單", () => {
+  const html = `<div class='pc1_nr' onclick=topcls('625828','') >魚類<span class=pt9 >...25</span></div></DIV>
+<a style='display:none;'  href='https://www.shop2000.com.tw/全富水產/product/625828'>魚類</a>
+<div class='pc1_nr' onclick=topcls('632052','') >廠商直送(預購團)<span class=pt9 >...150</span></div>
+<a style='display:none;'  href='https://www.shop2000.com.tw/全富水產/product/632052'>廠商直送(預購團)</a>
+<div onclick=topcls('625828','1374578') >/ 次分類</div>`;
+  assert.deepEqual(parseCategories(html), [
+    { pc1sn: "625828", name: "魚類", count: 25 },
+    { pc1sn: "632052", name: "廠商直送(預購團)", count: 150 },
+  ]);
 });

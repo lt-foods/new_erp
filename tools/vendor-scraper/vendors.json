@@ -38,5 +38,13 @@
       "https://www.shop2000.com.tw/youcanbuy2/product/676417"
     ],
     "supplier_id": 32
+  },
+  "quanfu": {
+    "name": "全富",
+    "platform": "shop2000",
+    "urls": [
+      "https://www.shop2000.com.tw/全富水產"
+    ],
+    "supplier_id": 34
   }
 }
