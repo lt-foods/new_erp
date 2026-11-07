@@ -5,7 +5,7 @@ export const CSV_COLUMNS = [
   "vendor", "psn", "product_code", "name", "category", "subcategory",
   "price_general", "price_member", "price_original",
   "stock", "options", "short_desc", "tags", "free_shipping", "shipping_methods",
-  "image", "url", "description",
+  "image", "image_files", "url", "description",
 ];
 
 export function csvEscape(v) {
@@ -27,8 +27,7 @@ export function stamp() {
 }
 
 /** 一家廠商一次抓完的結果 → out/<key>/<時間>/products.{json,csv} */
-export function writeVendorOutput(outRoot, key, meta, rows) {
-  const dir = path.join(outRoot, key, stamp());
+export function writeVendorOutput(outRoot, key, meta, rows, dir = path.join(outRoot, key, stamp())) {
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "products.json"), JSON.stringify({ ...meta, scraped_at: new Date().toISOString(), count: rows.length, products: rows }, null, 2));
   writeCsv(path.join(dir, "products.csv"), rows);

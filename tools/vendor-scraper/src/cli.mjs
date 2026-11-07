@@ -3,18 +3,20 @@
 //
 //   node src/cli.mjs vendors                         列出 vendors.json 的廠商與網址
 //   node src/cli.mjs login  [vendor ...]             只測登入
-//   node src/cli.mjs scrape [vendor ...] [--out out] [--no-detail] [--limit N] [--pages N] [--delay 400] [--raw]
+//   node src/cli.mjs scrape [vendor ...] [--out out] [--no-detail] [--limit N] [--pages N] [--delay 400] [--raw] [--images main|all]
+//   node src/cli.mjs images <products.json 路徑> [--mode main|all]      對已經抓好的結果補下載圖片
 //   node src/cli.mjs scrape --url <網址> [--vendor key] [--platform shop2000]   臨時抓一個不在清單裡的頁面
 //
 // vendor 是 vendors.json 的 key（不給 = 全部）。每家可以列多個網址（urls），一次全抓。
 // 帳密從 .env 讀：VENDOR_<KEY>_EMAIL / VENDOR_<KEY>_PASSWORD，沒有就退回 <PLATFORM>_EMAIL / <PLATFORM>_PASSWORD。
-// 輸出：out/<vendor>/<時間>/products.json、products.csv（+ --raw 時的 raw/*.html）。
+// 輸出：out/<vendor>/<時間>/products.json、products.csv（+ --raw 時的 raw/*.html、--images 時的 images/<psn>-<n>.jpg）。
 
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { platforms, detectPlatform } from "./platforms/index.mjs";
 import { writeVendorOutput } from "./output.mjs";
+import { downloadImages } from "./images.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -92,7 +94,14 @@ async function scrapeVendor(vendor, flags) {
   const seen = new Set();
   const uniq = rows.filter((r) => (seen.has(r.psn) ? false : (seen.add(r.psn), true)));
 
-  const dir = writeVendorOutput(outRoot, vendor.key, { vendor: vendor.name, key: vendor.key, platform: vendor.platform.name, urls: vendor.urls, categories }, uniq);
+  const meta = { vendor: vendor.name, key: vendor.key, platform: vendor.platform.name, urls: vendor.urls, categories };
+  let dir = writeVendorOutput(outRoot, vendor.key, meta, uniq);
+  if (flags.images) {
+    const mode = flags.images === "all" ? "all" : "main";
+    const st = await downloadImages(uniq, path.join(dir, "images"), mode, { log });
+    log(`圖片（${mode}）：下載 ${st.downloaded}、已存在 ${st.skipped}、失敗 ${st.failed}`);
+    dir = writeVendorOutput(outRoot, vendor.key, meta, uniq, dir); // 回填 image_files 後重寫
+  }
   if (rawFiles.length) {
     const rawDir = path.join(dir, "raw");
     fs.mkdirSync(rawDir, { recursive: true });
@@ -133,6 +142,17 @@ async function main() {
       const c = v.platform.createClient({ url: v.urls[0], ...credsFor(v.key, v.platform.name), log: (m) => console.error(`[${v.key}] ${m}`) });
       await c.login();
     }
+    return;
+  }
+  if (cmd === "images") {
+    const file = rest[0];
+    if (!file) throw new Error("要給 products.json 的路徑");
+    const data = JSON.parse(fs.readFileSync(file, "utf8"));
+    const dir = path.join(path.dirname(file), "images");
+    const mode = flags.mode === "all" ? "all" : "main";
+    const st = await downloadImages(data.products, dir, mode, { log: (m) => console.error(m) });
+    fs.writeFileSync(file, JSON.stringify(data, null, 2));
+    console.log(JSON.stringify({ mode, dir, ...st }, null, 2));
     return;
   }
   if (cmd === "scrape") {
