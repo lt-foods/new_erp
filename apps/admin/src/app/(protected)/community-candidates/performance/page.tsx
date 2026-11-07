@@ -39,6 +39,8 @@ type Outcome = {
   slate_status: string | null;
   /** manual = 人工排；reco = 週曆系統預選排入；reco_explore = 新嘗試名額（20261101000240） */
   source: "manual" | "reco" | "reco_explore" | null;
+  /** 人工排的，系統預選也有選到同一樣（20261107000080）；null = 系統沒選 */
+  also_picked: { slate_date: string; predicted: number | null; item_name: string | null } | null;
   start_date: string | null;
   buyers_24h: number | null;
   buyers_7d: number | null;
@@ -49,9 +51,19 @@ type Outcome = {
 
 const SOURCE_LABEL = { manual: "人工排", reco: "系統推薦", reco_explore: "系統推薦・新嘗試" } as const;
 
-/** 人工排 vs 系統推薦：近 30 天開的總倉團，依來源（rpc_reco_source_compare，20261101000250） */
+/**
+ * 人工排 vs 系統推薦：近 30 天開的總倉團，依來源（rpc_reco_source_compare，20261101000250）。
+ * 20261107000080 起人工排再分「系統也有選」（manual_also_picked）：人排的、但系統預選也有選到同一樣。
+ */
+type CompareSource = "manual_also_picked" | "manual" | "reco" | "reco_explore";
+const COMPARE_ROWS: { source: CompareSource; label: string; hint: string }[] = [
+  { source: "manual_also_picked", label: "人工排・系統也有選", hint: "人排的，系統預選也有選到同一樣（這筆候選本身有預選，或預選裡有向量 ≥0.85 的同款）" },
+  { source: "manual", label: "人工排・系統沒選", hint: "人排的，系統預選沒有選到同款" },
+  { source: "reco", label: "系統推薦", hint: "從週曆系統預選按「排入」的" },
+  { source: "reco_explore", label: "系統推薦・新嘗試", hint: "系統預選的新嘗試名額按「排入」的" },
+];
 type SourceCompare = {
-  source: "manual" | "reco" | "reco_explore";
+  source: CompareSource;
   campaigns: number;
   settled: number;
   avg_buyers: number | null;
@@ -87,7 +99,7 @@ export default function RecoPerformancePage() {
     const [r, o, c] = await Promise.all([
       sb.from("reco_eval_runs").select("*").order("run_at", { ascending: false }).limit(60),
       sb.from("reco_outcomes")
-        .select("candidate_id, predicted, low, high, confidence, slate_status, source, start_date, buyers_24h, buyers_7d, buyers_final, settled, candidate:community_product_candidates(product_name_hint)")
+        .select("candidate_id, predicted, low, high, confidence, slate_status, source, also_picked, start_date, buyers_24h, buyers_7d, buyers_final, settled, candidate:community_product_candidates(product_name_hint)")
         .order("scheduled_at", { ascending: false, nullsFirst: false })
         .limit(1000),
       sb.rpc("rpc_reco_source_compare", { p_days: 30 }),
@@ -178,7 +190,7 @@ export default function RecoPerformancePage() {
           <section className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200 px-4 py-2.5 text-sm dark:border-zinc-800">
               <span className="font-medium">人工排 vs 系統推薦</span>
-              <span className="text-xs text-zinc-500">近 30 天開的總倉團（不是從系統預選排入的都算人工排）；買家數只算已到貨結束的，預估是開團前算的</span>
+              <span className="text-xs text-zinc-500">近 30 天開的總倉團（不是從系統預選排入的都算人工排；人工排再分系統有沒有也選到同款）；買家數只算已到貨結束的，預估是開團前算的</span>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full whitespace-nowrap text-sm">
@@ -195,11 +207,11 @@ export default function RecoPerformancePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {(["manual", "reco", "reco_explore"] as const).map((src) => {
+                  {COMPARE_ROWS.map(({ source: src, label, hint }) => {
                     const c = compare.find((x) => x.source === src);
                     return (
                       <tr key={src} className="border-t border-zinc-100 dark:border-zinc-800">
-                        <td className="px-3 py-2">{SOURCE_LABEL[src]}</td>
+                        <td className="px-3 py-2" title={hint}>{label}</td>
                         <td className="px-3 py-2 text-right">{c?.campaigns ?? 0}</td>
                         <td className="px-3 py-2 text-right">{c?.settled ?? 0}</td>
                         <td className="px-3 py-2 text-right font-semibold">{c?.avg_buyers != null ? `${n1(c.avg_buyers)} 位` : "—"}</td>
@@ -325,6 +337,12 @@ export default function RecoPerformancePage() {
                         {o.source === "reco" || o.source === "reco_explore"
                           ? <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[11px] text-violet-700 dark:bg-violet-950/40 dark:text-violet-300">{SOURCE_LABEL[o.source]}</span>
                           : <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[11px] text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">人工排</span>}
+                        {o.also_picked && (
+                          <span className="ml-1 rounded bg-violet-50 px-1.5 py-0.5 text-[11px] text-violet-700 dark:bg-violet-950/40 dark:text-violet-300"
+                                title={`系統預選 ${o.also_picked.slate_date.slice(5).replace("-", "/")}${o.also_picked.predicted != null ? `・預估 ${o.also_picked.predicted} 人` : ""}${o.also_picked.item_name ? `・同款：${o.also_picked.item_name}` : ""}`}>
+                            系統也有選
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-2 text-right">
                         {o.predicted == null ? <span className="text-zinc-400">—</span> : (
