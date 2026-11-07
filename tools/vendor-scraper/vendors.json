@@ -62,5 +62,13 @@
       "https://www.shop2000.com.tw/queenhouse"
     ],
     "supplier_id": 6
+  },
+  "jinhejia": {
+    "name": "金賀家",
+    "platform": "shop2000",
+    "urls": [
+      "https://www.shop2000.com.tw/聯合行銷"
+    ],
+    "supplier_id": 12
   }
 }
