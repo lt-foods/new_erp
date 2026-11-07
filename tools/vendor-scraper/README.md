@@ -9,7 +9,7 @@
 
 | 平台 | 廠商 | 備註 |
 |---|---|---|
-| `shop2000` | 辛普森德日韓 `www.simpsons.com.tw`、有鮮實業 `www.shop2000.com.tw/有鮮實業`、晨一 `www.shop2000.com.tw/one999`、人和 `www.shop2000.com.tw/人和食緣食品批發`、YCB `www.shop2000.com.tw/youcanbuy2`、全富 `www.shop2000.com.tw/全富水產`、金鑽 `www.shop2000.com.tw/FDG`、女王家 `www.shop2000.com.tw/queenhouse`、金賀家 `www.shop2000.com.tw/聯合行銷` | 沒登入看不到任何商品；價格依會員等級（辛普森「VVIP 轉批等級」、有鮮「超級VVIP」） |
+| `shop2000` | 辛普森德日韓 `www.simpsons.com.tw`、有鮮實業 `www.shop2000.com.tw/有鮮實業`、晨一 `www.shop2000.com.tw/one999`、人和 `www.shop2000.com.tw/人和食緣食品批發`、YCB `www.shop2000.com.tw/youcanbuy2`、全富 `www.shop2000.com.tw/全富水產`、金鑽 `www.shop2000.com.tw/FDG`、女王家 `www.shop2000.com.tw/queenhouse`、金賀家 `www.shop2000.com.tw/聯合行銷`、米嵐 `www.shop2000.com.tw/米嵐各國批發` | 沒登入看不到任何商品；價格依會員等級（辛普森「VVIP 轉批等級」、有鮮「超級VVIP」） |
 
 LINE 記事本那支在 `tools/line-note-scraper/`，是另一條線（LINE 非官方協定），不在這裡。
 
@@ -67,7 +67,7 @@ node src/cli.mjs scrape --url 'https://www.shop2000.com.tw/有鮮實業/product/
 }
 ```
 
-shop2000 的網址：店家首頁（`www.shop2000.com.tw/店名`）會自動找出所有分類逐一抓；`/product/<數字>` 是分類（抓整個分類含分頁）、`/product/<數字>/<數字>` 是分類下的某個次分類、`/product/p<數字>` 是單一商品。
+shop2000 的網址：店家首頁（`www.shop2000.com.tw/店名`）或 `/product/all` 會自動找出所有分類逐一抓；`/product/<數字>` 是分類（抓整個分類含分頁）、`/product/<數字>/<數字>` 是分類下的某個次分類、`/product/p<數字>` 是單一商品。
 `platform` 不填會用網址猜（shop2000：平台網域或 `/product/<數字>` 結尾）。
 
 ## 新增平台

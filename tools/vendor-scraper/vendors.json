@@ -70,5 +70,13 @@
       "https://www.shop2000.com.tw/聯合行銷"
     ],
     "supplier_id": 12
+  },
+  "milan": {
+    "name": "米嵐",
+    "platform": "shop2000",
+    "urls": [
+      "https://www.shop2000.com.tw/米嵐各國批發/product/all"
+    ],
+    "supplier_id": 13
   }
 }

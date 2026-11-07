@@ -470,8 +470,9 @@ export const platform = {
       async scrape(url, { maxPages = Infinity, limit, detail = true, onRaw } = {}) {
         const m = new URL(url).pathname.match(/\/product\/(p?)(\d+)(?:\/(\d+))?\/?$/);
         if (!m) {
-          // 店家首頁（沒有 /product/…）→ 自動找出所有分類，逐一抓
-          if (/\/product\//.test(new URL(url).pathname)) {
+          // 店家首頁（沒有 /product/…）或 /product/all（全店）→ 自動找出所有分類，逐一抓
+          const path = new URL(url).pathname;
+          if (/\/product\//.test(path) && !/\/product\/all\/?$/i.test(path)) {
             throw new Error(`看不懂的 shop2000 網址（要店家首頁、/product/<分類id>[/<次分類id>] 或 /product/p<商品id>）：${url}`);
           }
           const cats = await client.discoverCategories();
