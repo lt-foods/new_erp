@@ -41,7 +41,7 @@
 
 | # | 模組 | 輸入 → 輸出（表） | 跑在哪 | 狀態 |
 |---|---|---|---|---|
-| ① | **進料 Ingest** | 各來源 → `line_note_market_posts`（之後一般化成 `reco_sources` + 原文） | Edge Function（line-note-worker）、Excel 上傳頁 | 記事本 ✅、聊天室 #1111、社群機器人 ✅、蝦皮/1688/中盤商 ⬜ |
+| ① | **進料 Ingest** | 各來源 → `line_note_market_posts`（之後一般化成 `reco_sources` + 原文） | Edge Function（line-note-worker）、Excel 上傳頁 | 記事本 ✅、聊天室 #1111、社群機器人 ✅、**廠商網站 ✅**（`tools/vendor-scraper` 登入爬 → `scripts/vendor-site-ingest.mjs` → `rpc_vendor_site_market_ingest`，20261107000000）、蝦皮/1688 ⬜ |
 | ② | **理解 Understand** | 原文＋圖 → 品項（品名、標準品名、價格、規格、標籤）`line_note_market_items` | Cloudflare Workers AI（market-ai） | ✅ |
 | ③ | **媒合 Match** | 品項 → 最像的 5 個已賣商品、賣過/類似/沒賣過 | bge-m3 向量 + 二字詞（`_match_products_hybrid`） | ✅ |
 | ④ | **特徵 Features** | 品項＋媒合 → `reco_features`（一品一列 jsonb，`feature_version`） | SQL + pg_cron | ⬜ |

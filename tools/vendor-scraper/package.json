@@ -1,0 +1,19 @@
+{
+  "name": "vendor-scraper",
+  "private": true,
+  "version": "0.2.0",
+  "description": "廠商網站商品爬蟲：用會員帳號登入後抓分類列表＋商品詳細，輸出 JSON / CSV。平台 adapter 制，目前支援 shop2000（辛普森德日韓、有鮮實業…）。",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "vendor-scraper": "./src/cli.mjs"
+  },
+  "scripts": {
+    "vendors": "node src/cli.mjs vendors",
+    "login": "node --env-file-if-exists=.env src/cli.mjs login",
+    "scrape": "node --env-file-if-exists=.env src/cli.mjs scrape",
+    "test": "node --test src/**/*.test.mjs"
+  }
+}
