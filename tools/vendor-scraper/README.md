@@ -33,7 +33,13 @@ node src/cli.mjs scrape --url 'https://www.shop2000.com.tw/有鮮實業/product/
 ```
 
 選項：`--out <dir>`（預設 `out/`）、`--delay <ms>`（每個請求間隔，預設 400）、`--pages N`、`--limit N`、
-`--raw`、`--no-detail`、`--url <網址>`（配 `--vendor <key>` 用那家的帳號與名稱；不在清單的平台用 `--platform`）。
+`--raw`、`--no-detail`、`--images main|all`（下載圖片）、
+`--url <網址>`（配 `--vendor <key>` 用那家的帳號與名稱；不在清單的平台用 `--platform`）。
+
+圖片：商品圖是公開網址（不用登入），CSV / JSON 裡本來就有 `image`（主圖）/ `images`（全部大圖）。
+要檔案本身加 `--images main`（每個商品一張主圖，辛普森 388 筆約 80MB）或 `--images all`
+（全部大圖，辛普森 2,400 多張、約 500MB），存到 `images/<psn>-<n>.jpg`，`image_files` 欄回填相對路徑。
+已經抓好的結果事後補圖：`node src/cli.mjs images out/<vendor>/<時間>/products.json --mode all`。
 
 輸出：`out/<vendor>/<時間>/products.json`、`products.csv`（有 BOM，Excel 直接開）。`out/` 已 gitignore。
 同一家列了多個網址時合併成一份，同一個商品出現在兩個分類只留一筆（`source_url` 記第一次出現的網址）。
@@ -86,7 +92,7 @@ shop2000 的網址：`/product/<數字>` 是分類（抓整個分類含分頁）
 | `spec` | 規格群組原始結構（只在 JSON） |
 | `tags` / `free_shipping` | 「40件免運」標籤、免運規則全文 |
 | `shipping_methods` / `payment_methods` | 貨運 / 付款方式 |
-| `image` / `images` | 主圖、全部大圖 |
+| `image` / `images` / `image_files` | 主圖網址、全部大圖網址、下載後的本機路徑（有 `--images` 才有） |
 | `description` / `description_html` | 商品說明純文字 / 原始 HTML（只在 JSON） |
 
 ## shop2000 平台細節（改解析時看）
