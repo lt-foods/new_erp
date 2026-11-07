@@ -32,6 +32,9 @@ npm run scrape -- simpsons --limit 5 --pages 1 --raw   # 試跑：前 5 筆，�
 node src/cli.mjs scrape --url 'https://www.shop2000.com.tw/有鮮實業/product/p62295130' --vendor youxian   # 臨時抓一頁
 ```
 
+預設跳過已經不能下單的分類：名稱含下架 / 不上架 / 待處理 / 待重盤 / 會員需知、守則，
+或「M/D 收單」「YYYY年M月」已經過了的（出清區照抓）。要全抓加 `--include-all`。
+
 選項：`--out <dir>`（預設 `out/`）、`--delay <ms>`（每個請求間隔，預設 400）、`--pages N`、`--limit N`、
 `--raw`、`--no-detail`、`--images main|all`（下載圖片）、
 `--url <網址>`（配 `--vendor <key>` 用那家的帳號與名稱；不在清單的平台用 `--platform`）。

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseListing, parseDetail, parseCategories, imageList, vdirOf, stripTags } from "./shop2000.mjs";
+import { parseListing, parseDetail, parseCategories, skipCategoryReason, imageList, vdirOf, stripTags } from "./shop2000.mjs";
 
 // 從 2026-11-07 實際頁面截下來、去識別化的最小片段（結構原封不動）。
 const LISTING = `
@@ -124,4 +124,19 @@ test("parseCategories：首頁左側選單", () => {
     { pc1sn: "625828", name: "魚類", count: 25 },
     { pc1sn: "632052", name: "廠商直送(預購團)", count: 150 },
   ]);
+});
+
+test("skipCategoryReason：下架 / 待處理 / 已過收單日 / 過去月份", () => {
+  const now = new Date("2026-11-07T04:00:00Z"); // 台北 11/7 中午
+  for (const n of ["預定下架商品", "下架區(要追加請先詢問區)", "不上架區", "【待處理】", "💛待重盤", "🖤重盤後有欠", "【會員需知】", "批發守則~"]) {
+    assert.ok(skipCategoryReason(n, now), n);
+  }
+  assert.match(skipCategoryReason("❤️11/4 收單 預購", now), /已過收單日/);
+  assert.match(skipCategoryReason("9/3結單商品", now), /已過收單日/);
+  assert.match(skipCategoryReason("2026年9月商品", now), /已過/);
+  for (const n of ["❤️11/8 收單 預購", "11/7 收單", "2026年11月商品", "2026年12月商品", "現貨出清區", "🔥出清甩貨亂賣", "魚類", "", null]) {
+    assert.equal(skipCategoryReason(n, now), null, String(n));
+  }
+  // 跨年：12 月看到「1/5 收單」是明年，不跳過
+  assert.equal(skipCategoryReason("1/5 收單", new Date("2026-12-20T04:00:00Z")), null);
 });

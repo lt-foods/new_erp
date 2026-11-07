@@ -71,6 +71,10 @@ type Slate = {
     id: number;
     product_name_hint: string | null;
     raw_text: string | null;
+    /** 廠商名（20261107000050；只回給總部，店長是 null） */
+    supplier?: string | null;
+    /** 'vendor_site' 廠商網站 / 'line_note_supplier' 廠商群組 / 其他來源 */
+    source?: string | null;
     reco_predictions: Prediction | Prediction[] | null;
   } | null;
 };
@@ -391,7 +395,7 @@ export default function CommunityCandidatesCalendarPage() {
           <h1 className="text-xl font-semibold">選品週曆</h1>
           <p className="mt-0.5 text-sm text-zinc-500">
             {editable
-              ? "未來 7 天 · 拖拉卡片排序或換日 · 虛線卡是系統預選（每天 8 個依預估買家、2 個「新嘗試」；同款還沒結束的不推），按「排入」才會排程"
+              ? "未來 7 天 · 拖拉卡片排序或換日 · 虛線卡是系統預選（每天 38 個依預估買家、2 個「新嘗試」；同款還沒結束的不推），按「排入」才會排程"
               : "未來 7 天總部排定要開的團（唯讀）・虛線卡是系統推薦、還沒排入的"}
           </p>
         </div>
@@ -693,6 +697,14 @@ function SlateCard({
               className="line-clamp-2 font-medium leading-snug hover:underline">
           {name}
         </Link>
+      )}
+      {sl.candidate?.supplier && (
+        <div className="truncate text-[11px] text-zinc-600 dark:text-zinc-300"
+             title={sl.candidate.source === "vendor_site" ? "來源：廠商網站" : sl.candidate.source === "line_note_supplier" ? "來源：廠商 LINE 群組" : undefined}>
+          廠商：<span className="font-medium">{sl.candidate.supplier}</span>
+          {sl.candidate.source === "vendor_site" && <span className="ml-1 text-zinc-400">・網站</span>}
+          {sl.candidate.source === "line_note_supplier" && <span className="ml-1 text-zinc-400">・群組</span>}
+        </div>
       )}
       <div className="flex flex-wrap items-center gap-1.5">
         <ConfidenceChevrons level={p?.confidence} />
