@@ -78,5 +78,13 @@
       "https://www.shop2000.com.tw/米嵐各國批發/product/all"
     ],
     "supplier_id": 13
+  },
+  "v173": {
+    "name": "173批發",
+    "platform": "shop2000",
+    "urls": [
+      "https://www.shop2000.com.tw/naomi8888"
+    ],
+    "supplier_id": 113
   }
 }
