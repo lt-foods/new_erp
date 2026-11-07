@@ -102,5 +102,37 @@
       "https://www.shop2000.com.tw/飛天寶/product/all"
     ],
     "supplier_id": 4
+  },
+  "tongyi": {
+    "name": "統一",
+    "platform": "shop2000",
+    "urls": [
+      "https://www.shop2000.com.tw/lansoneshop/product/716259/1586561"
+    ],
+    "supplier_id": 25
+  },
+  "aya": {
+    "name": "艾雅",
+    "platform": "shop2000",
+    "urls": [
+      "https://www.shop2000.com.tw/aya"
+    ],
+    "supplier_id": 17
+  },
+  "yipinxiang": {
+    "name": "億品鄉",
+    "platform": "shop2000",
+    "urls": [
+      "https://www.shop2000.com.tw/億品鄉"
+    ],
+    "supplier_id": 171
+  },
+  "zhaoyang": {
+    "name": "兆洋",
+    "platform": "shop2000",
+    "urls": [
+      "https://www.shop2000.com.tw/兆洋水產行團購批發"
+    ],
+    "supplier_id": 73
   }
 }
