@@ -11,6 +11,7 @@ import { createPortal } from "react-dom";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
 import { ChartCard, num } from "@/components/ChartKit";
+import SourceTabs from "../SourceTabs";
 
 type Account = { id: number; label: string; status: string; display_name: string | null };
 type LineHome = { homeId: string; name: string; kind: string };
@@ -130,8 +131,9 @@ export default function SupplierGroupsPage() {
 
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
+      <SourceTabs />
       <header>
-        <h1 className="text-xl font-semibold">廠商群組</h1>
+        <h1 className="text-xl font-semibold">廠商群組（LINE）</h1>
         <p className="text-sm text-zinc-500">
           選機器人帳號、勾要讀的廠商群組。讀到的新貼文馬上進
           <Link href="/community-candidates" className="mx-1 text-blue-600 hover:underline dark:text-blue-400">候選池</Link>

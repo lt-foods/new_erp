@@ -6,6 +6,7 @@
 //   node src/cli.mjs scrape [vendor ...] [--out out] [--no-detail] [--limit N] [--pages N] [--delay 400] [--raw] [--images main|all]
 //   node src/cli.mjs images <products.json 路徑> [--mode main|all]      對已經抓好的結果補下載圖片
 //   node src/cli.mjs scrape --url <網址> [--vendor key] [--platform shop2000]   臨時抓一個不在清單裡的頁面
+//   （--vendors <path> 換一份清單檔；後台「廠商網站」頁的清單由 scripts/vendor-sites-run.mjs 產生）
 //   （預設跳過下架 / 待處理 / 已過收單日的分類，要全抓加 --include-all）
 //
 // vendor 是 vendors.json 的 key（不給 = 全部）。每家可以列多個網址（urls），一次全抓。
@@ -36,8 +37,10 @@ function parseArgs(argv) {
   return args;
 }
 
-function loadVendors() {
-  return JSON.parse(fs.readFileSync(path.join(here, "..", "vendors.json"), "utf8"));
+/** 預設讀 vendors.json；--vendors <path> 換一份（scripts/vendor-sites-run.mjs 從資料庫產生的） */
+function loadVendors(flags = {}) {
+  const file = typeof flags.vendors === "string" ? path.resolve(flags.vendors) : path.join(here, "..", "vendors.json");
+  return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
 function envKey(s) {
@@ -116,11 +119,11 @@ async function scrapeVendor(vendor, flags) {
 function selectVendors(rest, flags) {
   if (flags.url) {
     const key = flags.vendor || "adhoc";
-    const all = loadVendors();
+    const all = loadVendors(flags);
     const base = all[key] || { name: new URL(flags.url).hostname, platform: flags.platform };
     return [resolveVendor(key, { ...base, url: undefined, urls: [flags.url] }, flags)];
   }
-  const vendors = loadVendors();
+  const vendors = loadVendors(flags);
   const keys = rest.length ? rest : Object.keys(vendors);
   return keys.map((k) => {
     if (!vendors[k]) throw new Error(`vendors.json 裡沒有 "${k}"，有的是：${Object.keys(vendors).join(", ")}`);
