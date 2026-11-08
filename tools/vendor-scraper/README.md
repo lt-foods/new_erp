@@ -13,6 +13,19 @@
 
 LINE 記事本那支在 `tools/line-note-scraper/`，是另一條線（LINE 非官方協定），不在這裡。
 
+## 清單在後台（2026-11-08 起）
+
+廠商清單與帳密以後台 **社群選品 → 廠商網站**（`vendor_sites` 表，20261108000000）為準，
+要加廠商、改密碼都在那一頁改。照清單跑：
+
+```bash
+node scripts/vendor-sites-run.mjs              # 所有啟用中的廠商，一家一家爬 + 進候選池，跑完回寫時間 / 筆數
+node scripts/vendor-sites-run.mjs youxian 173  # 只跑這幾家（代號）
+node scripts/vendor-sites-run.mjs --no-ingest  # 只爬不進候選池
+```
+
+下面的 `vendors.json` + `.env` 是沒有資料庫權限時的本機用法，仍可用；`--vendors <path>` 可換清單檔。
+
 ## 安裝
 
 ```bash
