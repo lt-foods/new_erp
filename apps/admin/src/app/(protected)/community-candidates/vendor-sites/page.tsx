@@ -5,6 +5,7 @@ import { getSupabase } from "@/lib/supabase";
 import { useRole, isAdmin } from "@/lib/role";
 import SpinButton from "@/components/SpinButton";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
+import SourceTabs from "../SourceTabs";
 
 /**
  * 廠商網站清單（vendor_sites，20261108000000）：爬蟲（tools/vendor-scraper）照這張表登入廠商網站抓商品進候選池。
@@ -85,6 +86,7 @@ export default function VendorSitesPage() {
 
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
+      <SourceTabs />
       <header className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h1 className="text-xl font-semibold">廠商網站</h1>
