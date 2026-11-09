@@ -501,7 +501,11 @@ export const platform = {
     const api = {
       login: () => client.login(),
       /** url 是分類（/product/<id>）或單一商品（/product/p<id>） */
-      async scrape(url, { maxPages = Infinity, limit, detail = true, onRaw, includeAll = false } = {}) {
+      /**
+       * skipPsns：已經進過候選池的商品代號（Set）。列表照抓、不抓詳細頁、也不輸出（每天自動跑只處理新上架的）。
+       * 回傳 listed = 列表上看到的商品數（含跳過的，扣掉已下架 / 過期分類），給清單頁的「上次抓取 N 筆」。
+       */
+      async scrape(url, { maxPages = Infinity, limit, detail = true, onRaw, includeAll = false, skipPsns = null } = {}) {
         const m = new URL(url).pathname.match(/\/product\/(p?)(\d+)(?:\/(\d+))?\/?$/);
         if (!m) {
           // 店家首頁（沒有 /product/…）或 /product/all（全店）→ 自動找出所有分類，逐一抓
@@ -518,11 +522,13 @@ export const platform = {
           });
           const all = [];
           const seen = new Set();
+          const listedSeen = new Set();
           for (const c of cats) {
-            const r = await api.scrape(client.productUrl(c.pc1sn), { maxPages, limit, detail, onRaw, includeAll });
+            const r = await api.scrape(client.productUrl(c.pc1sn), { maxPages, limit, detail, onRaw, includeAll, skipPsns });
+            for (const psn of r.listedPsns ?? []) listedSeen.add(psn);
             for (const row of r.items) if (!seen.has(row.psn)) { seen.add(row.psn); all.push(row); }
           }
-          return { category: null, items: all };
+          return { category: null, items: all, listed: listedSeen.size, listedPsns: [...listedSeen] };
         }
         let items;
         let category = null;
@@ -537,6 +543,13 @@ export const platform = {
           items = listing.items;
         }
         if (limit) items = items.slice(0, Number(limit));
+        // 列表就能判斷的過期分類先排掉，再算「列表上有幾筆」與「哪些是新的」
+        const listedPsns = items.filter((it) => includeAll || !skipCategoryReason(it.category ?? category)).map((it) => String(it.psn));
+        if (skipPsns && skipPsns.size) {
+          const before = items.length;
+          items = items.filter((it) => !skipPsns.has(String(it.psn)));
+          if (items.length < before) client.log(`已在候選池 ${before - items.length} 筆，跳過詳細頁；新的 ${items.length} 筆`);
+        }
         const rows = [];
         for (let i = 0; i < items.length; i++) {
           const it = items[i];
@@ -557,14 +570,14 @@ export const platform = {
           if (!row.subcategory) row.subcategory = subcategory;
           rows.push(row);
         }
-        if (includeAll) return { category, items: rows };
+        if (includeAll) return { category, items: rows, listed: listedPsns.length, listedPsns };
         // 商品自己掛的分類 / 次分類過期了也不要（例：統一「2026年9月商品 / 9/3結單商品」）
         const kept = rows.filter((r) => {
           const why = skipCategoryReason(r.category) || skipCategoryReason(r.subcategory);
           return !why;
         });
         if (kept.length < rows.length) client.log(`過濾掉 ${rows.length - kept.length} 筆（分類已下架 / 已過收單日）`);
-        return { category, items: kept };
+        return { category, items: kept, listed: listedPsns.length, listedPsns };
       },
     };
     return api;
