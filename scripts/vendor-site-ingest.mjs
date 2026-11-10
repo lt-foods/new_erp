@@ -18,8 +18,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { jsonLiteral, sql } from "./lib/supabase-sql.mjs";
-// 跟爬蟲同一套「這個分類還能不能下單」（已下架 / 待處理 / 已過收單日的不進料）
-import { skipCategoryReason } from "../tools/vendor-scraper/src/platforms/shop2000.mjs";
+// 貼文組法、「這個分類還能不能下單」跟每天自動跑（vendor-sites-run.mjs）共用
+import { isSellable, payloadOf } from "./lib/vendor-site-payload.mjs";
 
 const args = process.argv.slice(2);
 const file = args.find((a) => !a.startsWith("--"));
@@ -84,56 +84,12 @@ function uploadImage(product, idx = 1) {
   return storagePath;
 }
 
-function priceLine(p) {
-  const price = p.price_member ?? p.price_general;
-  let l = `會員價 $${price}`;
-  if (p.price_general != null && p.price_member != null && p.price_general !== p.price_member) l += `（一般價 $${p.price_general}）`;
-  if (p.price_original != null && p.price_original !== price) l += `（原價 $${p.price_original}）`;
-  return l;
-}
-
-/**
- * 結構化欄位，存進 line_note_market_posts.vendor_item（20261107000060）。
- * market-ai 30 個一批時品名 / 價格 / 規格直接用這裡的，模型只補標準品名與標籤。
- */
-function itemOf(p) {
-  const price = p.price_member ?? p.price_general ?? null;
-  const specs = (p.spec ?? []).map((g) => `${g.name}：${g.options.map((o) => o.name).join("、")}`);
-  return {
-    name: p.name,
-    price,
-    price_text: price != null ? priceLine(p) : null,
-    spec: (specs.length ? specs.join("；") : (p.options ?? []).join("、")) || null,
-    category: [p.category, p.subcategory].filter(Boolean).join(" / ") || null,
-    short_desc: p.short_desc || null,
-    product_code: p.product_code || null,
-  };
-}
-
-/** 貼文文字：第一行品名、第二行價格（quick candidate 靠這兩行），後面規格／代碼／分類／說明 */
-function composeText(p) {
-  const lines = [p.name];
-  if ((p.price_member ?? p.price_general) != null) lines.push(priceLine(p));
-  const specs = (p.spec ?? []).map((g) => `${g.name}：${g.options.map((o) => o.name + (o.stock != null ? `(庫存${o.stock})` : "")).join("、")}`);
-  if (specs.length) lines.push("規格：" + specs.join("；"));
-  else if (p.options?.length) lines.push("規格：" + p.options.join("、"));
-  if (p.product_code) lines.push(`商品代碼：${p.product_code}`);
-  if (p.category) lines.push(`分類：${[p.category, p.subcategory].filter(Boolean).join(" / ")}`);
-  if (p.free_shipping) lines.push(p.free_shipping);
-  else if (p.tags?.length) lines.push(p.tags.join("、"));
-  if (p.short_desc) lines.push(p.short_desc);
-  if (p.stock != null) lines.push(`庫存：${p.stock}`);
-  if (p.description) lines.push("", p.description);
-  lines.push("", `來源：${p.url}`);
-  return lines.join("\n").slice(0, 8000);
-}
-
 const limit = Number(flag("limit")) || Infinity;
 const withImages = flag("no-images") === undefined;
 const dry = flag("dry") !== undefined;
 const includeAll = flag("include-all") !== undefined;
 const sellable = includeAll ? data.products
-  : data.products.filter((p) => !(skipCategoryReason(p.category) || skipCategoryReason(p.subcategory)));
+  : data.products.filter(isSellable);
 if (sellable.length < data.products.length) {
   console.error(`[${vendorKey}] 跳過 ${data.products.length - sellable.length} 筆（分類已下架 / 已過收單日；要全進加 --include-all）`);
 }
@@ -149,7 +105,7 @@ for (let i = 0; i < products.length; i++) {
     try { const sp = uploadImage(p, 1); if (sp) { image_paths = [sp]; uploaded++; } }
     catch (e) { imgFail++; console.error(`  圖片 p${p.psn}：${e.message}`); }
   }
-  payload.push({ psn: String(p.psn), name: p.name, url: p.url, text: composeText(p), image_paths, scraped_at: data.scraped_at, item: itemOf(p) });
+  payload.push(payloadOf(p, data.scraped_at, image_paths));
   if ((i + 1) % 50 === 0 || i === products.length - 1) console.error(`  圖片 ${i + 1}/${products.length}（上傳/已有 ${uploaded}、失敗 ${imgFail}）`);
 }
 

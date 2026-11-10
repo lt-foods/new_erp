@@ -1,0 +1,49 @@
+# 每天自動爬廠商網站（後台「廠商來源 → 網站」清單），新上架的商品進候選池。
+# 清單、帳密在資料庫（vendor_sites，20261108000000），這裡只需要能寫資料庫的 service_role key。
+# 已在候選池的商品只看列表、不抓詳細頁；17 家約 20～40 分鐘。
+#
+# 需要的 repository secrets：
+#   SUPABASE_SERVICE_ROLE_KEY  —— Supabase Dashboard → Project Settings → API → service_role（新增）
+#   NEXT_PUBLIC_SUPABASE_URL   —— 已有（deploy-admin 在用），當 SUPABASE_URL
+# 手動跑：Actions → vendor-sites-daily → Run workflow（可填代號只跑幾家）。
+name: vendor-sites-daily
+
+on:
+  schedule:
+    - cron: '23 18 * * *'   # UTC 18:23 = 台北 02:23（LINE 群組 01:13 讀完之後）
+  workflow_dispatch:
+    inputs:
+      keys:
+        description: '只跑這幾家（代號，空白分隔；空的 = 全部啟用中）'
+        required: false
+        default: ''
+
+concurrency:
+  group: vendor-sites-daily
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Crawl vendor sites
+        env:
+          SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          KEYS: ${{ github.event.inputs.keys }}
+        run: |
+          if [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            echo "::error::缺 repository secret SUPABASE_SERVICE_ROLE_KEY（Supabase → Project Settings → API → service_role）"
+            exit 1
+          fi
+          node scripts/vendor-sites-run.mjs $KEYS

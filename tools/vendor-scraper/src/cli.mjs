@@ -7,6 +7,7 @@
 //   node src/cli.mjs images <products.json 路徑> [--mode main|all]      對已經抓好的結果補下載圖片
 //   node src/cli.mjs scrape --url <網址> [--vendor key] [--platform shop2000]   臨時抓一個不在清單裡的頁面
 //   （--vendors <path> 換一份清單檔；後台「廠商網站」頁的清單由 scripts/vendor-sites-run.mjs 產生）
+//   （--skip-psns <path> JSON 陣列：已在候選池的商品代號，只抓列表、不抓詳細頁、不輸出）
 //   （預設跳過下架 / 待處理 / 已過收單日的分類，要全抓加 --include-all）
 //
 // vendor 是 vendors.json 的 key（不給 = 全部）。每家可以列多個網址（urls），一次全抓。
@@ -73,6 +74,10 @@ async function scrapeVendor(vendor, flags) {
   const rawFiles = [];
   const rows = [];
   const categories = [];
+  const listed = new Set();
+  // --skip-psns <檔>：JSON 陣列，已經進過候選池的商品代號；只抓列表、不抓它們的詳細頁、也不輸出
+  const skipPsns = typeof flags["skip-psns"] === "string"
+    ? new Set(JSON.parse(fs.readFileSync(path.resolve(flags["skip-psns"]), "utf8")).map(String)) : null;
   let client = null;
   let clientOrigin = null;
 
@@ -89,9 +94,11 @@ async function scrapeVendor(vendor, flags) {
       limit: flags.limit ? Number(flags.limit) : undefined,
       detail: flags.detail !== false,
       includeAll: flags["include-all"] === true,
+      skipPsns,
       onRaw: flags.raw ? (name, html) => rawFiles.push([name, html]) : undefined,
     });
     if (r.category) categories.push({ url, category: r.category, count: r.items.length });
+    for (const psn of r.listedPsns ?? []) listed.add(psn);
     for (const row of r.items) rows.push({ vendor: vendor.name, vendor_key: vendor.key, source_url: url, ...row });
   }
 
@@ -112,8 +119,8 @@ async function scrapeVendor(vendor, flags) {
     fs.mkdirSync(rawDir, { recursive: true });
     for (const [name, html] of rawFiles) fs.writeFileSync(path.join(rawDir, name), html, "utf8");
   }
-  log(`完成：${uniq.length} 筆 → ${dir}`);
-  return { dir, count: uniq.length };
+  log(`完成：${uniq.length} 筆${skipPsns ? `（列表 ${listed.size} 筆，其餘已在候選池）` : ""} → ${dir}`);
+  return { dir, count: uniq.length, listed: listed.size };
 }
 
 function selectVendors(rest, flags) {
@@ -165,7 +172,7 @@ async function main() {
     for (const v of selectVendors(rest, flags)) {
       try {
         const r = await scrapeVendor(v, flags);
-        summary.push({ vendor: v.name, count: r.count, out: r.dir });
+        summary.push({ vendor: v.name, count: r.count, listed: r.listed, out: r.dir });
       } catch (e) {
         console.error(`[${v.key}] 失敗：${e.message}`);
         summary.push({ vendor: v.name, error: e.message });
