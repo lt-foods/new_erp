@@ -26,11 +26,16 @@ import { buildDoneGroups, countGroupOrders, takeGroupOrders } from "@/lib/pickup
 //
 // 「全部」放最後、預設落在「待到貨」（2026-08-13 門市回報）：預設開在「全部」時
 // 待取貨跟還沒到貨的單混排，客人以為全部到貨就跑來，結果要的那件還在路上。
+//
+// 2026-11-10 門市回報（三峽／多數客人看錯）：「已到貨可取」改放第一頁並預設落在它，
+// 文字改直白（可取貨 / 未到貨），卡片右上角寫「已到貨・可取貨」。
+// 可取貨那頁是空的時候自動退到「未到貨」，免得一進來看到空白。
 type Tab = "all" | "waiting" | "pickup" | "done";
 
+// 物件順序＝分頁順序
 const TAB_LABEL: Record<Tab, string> = {
-  waiting: "待到貨",
-  pickup: "待取貨",
+  pickup: "已到貨可取",
+  waiting: "未到貨",
   done: "已完成",
   all: "全部",
 };
@@ -64,7 +69,9 @@ type PayableTotals = { waiting: TabTotals; pickup: TabTotals };
 
 export default function OrdersPage() {
   const router = useRouter();
-  const [tab, setTab] = useState<Tab>("waiting");
+  const [tab, setTab] = useState<Tab>("pickup");
+  // 客人自己點過分頁就不再自動切
+  const userPickedTab = useRef(false);
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [payableTotals, setPayableTotals] = useState<PayableTotals | null>(null);
   const [loading, setLoading] = useState(true);
@@ -137,6 +144,14 @@ export default function OrdersPage() {
 
   const [visible, setVisible] = useState(PAGE_SIZE);
 
+  // 沒有可取貨的單 → 預設改落在「未到貨」
+  useEffect(() => {
+    if (loading || userPickedTab.current) return;
+    if (tab === "pickup" && buckets.pickup.length === 0 && buckets.waiting.length > 0) {
+      setTab("waiting");
+    }
+  }, [loading, buckets, tab]);
+
   // 「已完成」改依「那一次到店結單」分組 —— 客人一趟拿走好幾個團的貨、當場付一次
   // 現金，平鋪的訂單列表拼不回那一次到底拿了什麼（見 lib/pickups.ts）。
   // 一張單分兩次取完會拆成兩張卡，所以這一頁的卡片數 ≠ bucket.length，
@@ -176,6 +191,7 @@ export default function OrdersPage() {
         variant="scroll"
         value={tab}
         onChange={(v) => {
+          userPickedTab.current = true;
           setTab(v as Tab);
           setVisible(PAGE_SIZE); // 換分頁回到第一頁
         }}
