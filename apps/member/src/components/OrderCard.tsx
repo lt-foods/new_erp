@@ -102,8 +102,8 @@ export type OrderPhase = "waiting" | "pickup" | "done" | "void" | "transferred";
 
 /** 分身卡右上角的狀態字（依「行」拆頁後，整張單的狀態字會對不上該頁的內容） */
 const PHASE_LABEL: Record<OrderPhase, { label: string; className: string }> = {
-  waiting: { label: "待到貨", className: "text-[#b06c00]" },
-  pickup: { label: "待取貨", className: "text-[#b06c00]" },
+  waiting: { label: "未到貨", className: "text-[#b06c00]" },
+  pickup: { label: "已到貨・可取貨", className: "font-semibold text-[#1a8a3a]" },
   done: { label: "已完成", className: "text-[var(--brand-strong)]" },
   void: { label: "訂單不成立", className: "text-[#c4271d]" },
   transferred: { label: "已轉讓", className: "text-[var(--ios-gray)]" },
@@ -126,14 +126,15 @@ export function orderPhase(o: Pick<OrderRow, "status" | "arrived">): {
     case "partially_completed":
       return { phase: "pickup", label: "部分已取", className: "text-[#b06c00]" };
   }
-  if (o.arrived) return { phase: "pickup", label: "待取貨", className: "text-[#b06c00]" };
+  if (o.arrived)
+    return { phase: "pickup", label: "已到貨・可取貨", className: "font-semibold text-[#1a8a3a]" };
   // 派貨中 = 總倉已出貨、門市**還沒收貨**，團友這時跑來店裡會領不到東西。
   // arrived 曾經無條件把 shipping 當「已到店」（2026-08-11 修掉，20260811000010：
   // 改問 is_order_pickup_ready）。標籤寫「運送中」比「待到貨」明確，
   // 但仍歸在 waiting 分頁 —— 兩者對團友的意思都是「先別跑來」。
   if (o.status === "shipping")
     return { phase: "waiting", label: "運送中", className: "text-[#b06c00]" };
-  return { phase: "waiting", label: "待到貨", className: "text-[#b06c00]" };
+  return { phase: "waiting", label: "未到貨", className: "text-[#b06c00]" };
 }
 
 /**
