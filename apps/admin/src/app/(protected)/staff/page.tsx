@@ -32,6 +32,7 @@ type Modal =
   | { mode: "stores"; row: StaffRow }
   | { mode: "perms"; row: StaffRow }
   | { mode: "disable"; row: StaffRow }
+  | { mode: "password"; row: StaffRow }
   | null;
 
 export default function StaffPage() {
@@ -202,6 +203,16 @@ export default function StaffPage() {
                       >
                         功能權限
                       </button>
+                      {/* 重設密碼：admin 不可動 owner（後端 staff-reset-password 也會擋） */}
+                      {(isOwner || r.role !== "owner") && (
+                        <button
+                          type="button"
+                          onClick={() => setModal({ mode: "password", row: r })}
+                          className="text-xs text-blue-600 hover:underline dark:text-blue-400"
+                        >
+                          重設密碼
+                        </button>
+                      )}
                       {disabled ? (
                         <button
                           type="button"
@@ -266,6 +277,12 @@ export default function StaffPage() {
           row={modal.row}
           onClose={() => setModal(null)}
           onSaved={() => { setModal(null); reload(); }}
+        />
+      )}
+      {modal?.mode === "password" && (
+        <ResetPasswordModal
+          row={modal.row}
+          onClose={() => setModal(null)}
         />
       )}
     </div>
@@ -478,6 +495,94 @@ function DisableModal({
   );
 }
 
+function ResetPasswordModal({
+  row, onClose,
+}: { row: StaffRow; onClose: () => void }) {
+  const [password, setPassword] = useState("");
+  const [confirmPw, setConfirmPw] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+  const who = row.display_name || row.email || "這位員工";
+
+  async function save() {
+    setErr(null);
+    if (password.length < 6) { setErr("密碼至少 6 碼"); return; }
+    if (password !== confirmPw) { setErr("兩次輸入的密碼不一致"); return; }
+    const { data, error } = await getSupabase().functions.invoke<{ ok?: boolean; error?: string }>(
+      "staff-reset-password",
+      { body: { user_id: row.user_id, password } },
+    );
+    if (error) {
+      let msg = error.message ?? "重設失敗";
+      try {
+        const ctx = (error as { context?: Response }).context;
+        if (ctx && typeof ctx.json === "function") {
+          const j = await ctx.json();
+          if (j?.error) msg = j.error as string;
+        }
+      } catch { /* 保留原訊息 */ }
+      setErr(msg);
+      return;
+    }
+    if (!data?.ok) { setErr(data?.error ?? "重設失敗"); return; }
+    // 成功後清掉輸入框裡的密碼，畫面不再保留
+    setPassword("");
+    setConfirmPw("");
+    setDone(true);
+  }
+
+  if (done) {
+    return (
+      <Modal open onClose={onClose} title="密碼已重設" maxWidth="max-w-md">
+        <div className="space-y-3 p-5">
+          <p className="text-sm text-zinc-700 dark:text-zinc-300">
+            已重設 <b>{who}</b> 的密碼，請私下通知對方用新密碼登入。
+          </p>
+          <div className="flex justify-end pt-2">
+            <SpinButton onClick={onClose} className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900">完成</SpinButton>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
+
+  return (
+    <Modal open onClose={onClose} title={`重設密碼 — ${row.email}`} maxWidth="max-w-md">
+      <div className="space-y-3 p-5">
+        <p className="text-xs text-zinc-500">
+          員工：<b className="text-zinc-700 dark:text-zinc-300">{row.display_name ?? "—"}</b>（{row.email ?? "—"}）
+        </p>
+        <label className="block text-sm">
+          <span className="text-zinc-600 dark:text-zinc-400">新密碼</span>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="new-password"
+            className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+          />
+        </label>
+        <label className="block text-sm">
+          <span className="text-zinc-600 dark:text-zinc-400">再輸入一次</span>
+          <input
+            type="password"
+            value={confirmPw}
+            onChange={(e) => setConfirmPw(e.target.value)}
+            autoComplete="new-password"
+            className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+          />
+        </label>
+        <p className="text-[11px] text-zinc-500">至少 6 碼。重設後對方的舊密碼就不能用了。</p>
+        {err && <p className="text-xs text-rose-600">{err}</p>}
+        <div className="flex justify-end gap-2 pt-2">
+          <SpinButton onClick={onClose} className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800">取消</SpinButton>
+          <SpinButton onClick={save} className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900">確認重設</SpinButton>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function CreateStaffModal({
   stores, isOwnerCaller, onClose, onSaved,
 }: {
@@ -579,7 +684,7 @@ function CreateStaffModal({
             </p>
           )}
           <p className="text-[11px] text-zinc-500">
-            員工用此 Email + 密碼登入後台；建議首次登入後盡快重設密碼。改完角色/綁店員工需重新登入才會生效。
+            員工用此 Email + 密碼登入後台；忘記密碼時，請總部在員工管理按「重設密碼」。改完角色/綁店員工需重新登入才會生效。
           </p>
           <div className="flex justify-end pt-2">
             <SpinButton onClick={onSaved} className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900">完成</SpinButton>
