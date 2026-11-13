@@ -427,6 +427,11 @@ verify_jwt = false
 [functions.staff-create]
 verify_jwt = false
 
+# staff-reset-password 同 staff-create：admin 瀏覽器呼叫，函式內自行驗 caller JWT
+# + owner/admin + tenant + 「admin 不可動 owner」檢查；gateway 驗 JWT 會擋掉 CORS preflight
+[functions.staff-reset-password]
+verify_jwt = false
+
 # trial-signup 是公開註冊端點（訪客還沒有帳號），rate limit 在函式內做
 [functions.trial-signup]
 verify_jwt = false
