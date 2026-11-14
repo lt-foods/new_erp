@@ -9,12 +9,14 @@
 //   - 目標是 owner 時 caller 必須是 owner（admin 不可動 owner）
 //   - password ≥ 6 碼（對齊 auth.minimum_password_length）
 //   - 回應只回 { ok: true }；回應、log、錯誤訊息都不帶密碼
+//   - 成功後寫一列 staff_password_reset_log（誰改了誰、何時、哪台裝置）。
+//     best-effort：密碼已經改了，寫紀錄失敗只留 console，不回錯（回錯會讓人以為沒改成而再按一次）
 //
 // 只需內建 secret SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY，未新增其他 secret。
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.8";
 import { corsHeaders } from "../_shared/cors.ts";
-import { checkCaller, checkInput, checkTarget } from "../_shared/staffPasswordReset.ts";
+import { buildResetLogRow, checkCaller, checkInput, checkTarget } from "../_shared/staffPasswordReset.ts";
 
 function requireEnv(name: string): string {
   const v = Deno.env.get(name);
@@ -69,6 +71,12 @@ Deno.serve(async (req) => {
       // Auth 回的訊息不含密碼本身（例：弱密碼規則），可直接回給前端
       return json({ error: updErr.message ?? "重設失敗" }, 400);
     }
+
+    // checkTarget 通過 ⇒ target 一定不是 null
+    const { error: logErr } = await sb
+      .from("staff_password_reset_log")
+      .insert(buildResetLogRow(caller, target!, req.headers));
+    if (logErr) console.error("staff-reset-password audit insert failed:", logErr.message);
 
     return json({ ok: true });
   } catch (e) {

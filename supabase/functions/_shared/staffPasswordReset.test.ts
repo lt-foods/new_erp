@@ -1,7 +1,7 @@
 // 用 node:test 寫：`deno test` 與 `node --test`（Node 22.6+ 型別剝除）都跑得動。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkCaller, checkInput, checkTarget, type AuthUserLike } from "./staffPasswordReset.ts";
+import { buildResetLogRow, checkCaller, checkInput, checkTarget, type AuthUserLike } from "./staffPasswordReset.ts";
 
 const T1 = "tenant-a";
 const T2 = "tenant-b";
@@ -65,4 +65,31 @@ test("owner／admin 對同公司一般員工成功", () => {
   assert.equal(checkTarget(admin, u("admin-2", "admin")).ok, true);
   // 改自己允許（計畫裁定）
   assert.equal(checkTarget(admin, admin).ok, true);
+});
+
+test("重設紀錄：記下誰改了誰、從哪台裝置，tenant 用呼叫者的，不含密碼", () => {
+  const h = new Headers({
+    "x-forwarded-for": "203.0.113.7, 10.0.0.1",
+    "user-agent": "UA-test",
+  });
+  const row = buildResetLogRow({ ...admin, email: "a@x" }, { ...storeStaff, email: "s@x" }, h);
+  assert.deepEqual(row, {
+    tenant_id: T1,
+    actor_user_id: "admin-1",
+    actor_email: "a@x",
+    target_user_id: "ss-1",
+    target_email: "s@x",
+    ip: "203.0.113.7",
+    user_agent: "UA-test",
+  });
+  assert.equal(JSON.stringify(row).includes(FAKE_PW), false);
+});
+
+test("重設紀錄：cf-connecting-ip 優先；什麼都沒有就是 null", () => {
+  const h = new Headers({ "cf-connecting-ip": "198.51.100.9", "x-forwarded-for": "203.0.113.7" });
+  assert.equal(buildResetLogRow(admin, storeStaff, h).ip, "198.51.100.9");
+  const none = buildResetLogRow(admin, storeStaff, new Headers());
+  assert.equal(none.ip, null);
+  assert.equal(none.user_agent, null);
+  assert.equal(none.actor_email, null);
 });

@@ -63,3 +63,37 @@ export function checkTarget(caller: AuthUserLike, target: AuthUserLike | null): 
   }
   return { ok: true };
 }
+
+// 重設成功後寫進 staff_password_reset_log 的那一列（不含密碼）
+export type ResetLogRow = {
+  tenant_id: string;
+  actor_user_id: string;
+  actor_email: string | null;
+  target_user_id: string;
+  target_email: string | null;
+  ip: string | null;
+  user_agent: string | null;
+};
+
+type HeaderLike = { get(name: string): string | null };
+type WithEmail = AuthUserLike & { email?: string | null };
+
+function clientIp(h: HeaderLike): string | null {
+  const cf = h.get("cf-connecting-ip")?.trim();
+  if (cf) return cf;
+  const xff = h.get("x-forwarded-for")?.split(",")[0]?.trim();
+  return xff || null;
+}
+
+// tenant 取呼叫者的（checkTarget 已保證目標同 tenant）
+export function buildResetLogRow(caller: WithEmail, target: WithEmail, headers: HeaderLike): ResetLogRow {
+  return {
+    tenant_id: tenantOf(caller),
+    actor_user_id: caller.id,
+    actor_email: caller.email ?? null,
+    target_user_id: target.id,
+    target_email: target.email ?? null,
+    ip: clientIp(headers),
+    user_agent: headers.get("user-agent"),
+  };
+}
