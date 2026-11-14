@@ -27,6 +27,9 @@ type StaffRow = {
 
 type Store = { id: number; code: string; name: string };
 
+// staff_password_reset_log 的一列（只讀；只有 staff-reset-password 會寫）
+type ResetLog = { target_user_id: string; actor_user_id: string; actor_email: string | null; created_at: string };
+
 type Modal =
   | { mode: "create" }
   | { mode: "role"; row: StaffRow }
@@ -45,6 +48,8 @@ export default function StaffPage() {
   const [error, setError] = useState<string | null>(null);
   const [modal, setModal] = useState<Modal>(null);
   const [reloadTick, setReloadTick] = useState(0);
+  // 每位員工最近一次被重設密碼的紀錄（target_user_id → 最新一筆）
+  const [lastReset, setLastReset] = useState<Map<string, ResetLog>>(new Map());
 
   const canManage = role === "owner" || role === "admin";
   const isOwner = role === "owner";
@@ -60,11 +65,21 @@ export default function StaffPage() {
     let cancelled = false;
     (async () => {
       const sb = getSupabase();
-      const [s, l] = await Promise.all([
+      const [s, l, pw] = await Promise.all([
         sb.from("stores").select("id, code, name").eq("is_active", true).order("name"),
         sb.rpc("rpc_list_staff"),
+        sb.from("staff_password_reset_log")
+          .select("target_user_id, actor_user_id, actor_email, created_at")
+          .order("created_at", { ascending: false })
+          .limit(1000),
       ]);
       if (cancelled) return;
+      // 讀不到紀錄（表還沒建 / 權限）不擋整頁，只是不顯示
+      const latest = new Map<string, ResetLog>();
+      for (const r of (pw.error ? [] : (pw.data ?? [])) as ResetLog[]) {
+        if (!latest.has(r.target_user_id)) latest.set(r.target_user_id, r);
+      }
+      setLastReset(latest);
       if (s.error) { setError(s.error.message); return; }
       if (l.error) { setError(l.error.message); return; }
       setStores((s.data ?? []) as Store[]);
@@ -178,6 +193,17 @@ export default function StaffPage() {
                     {r.last_sign_in_at
                       ? new Date(r.last_sign_in_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })
                       : "—"}
+                    {(() => {
+                      const pr = lastReset.get(r.user_id);
+                      if (!pr) return null;
+                      const by = rows.find((x) => x.user_id === pr.actor_user_id);
+                      const who = by?.display_name || by?.email || pr.actor_email || "管理員";
+                      return (
+                        <div className="mt-0.5 text-[10px] text-amber-700 dark:text-amber-400" title={who}>
+                          密碼 {new Date(pr.created_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })} 被 {who} 重設
+                        </div>
+                      );
+                    })()}
                   </Td>
                   <Td>
                     <div className="flex items-center justify-end gap-2">
@@ -283,7 +309,7 @@ export default function StaffPage() {
       {modal?.mode === "password" && (
         <ResetPasswordModal
           row={modal.row}
-          onClose={() => setModal(null)}
+          onClose={() => { setModal(null); reload(); }}
         />
       )}
     </div>
