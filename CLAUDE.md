@@ -120,6 +120,49 @@ curl -sS --cacert /root/.ccr/ca-bundle.crt \
 `jwt_secret`（= Dashboard 的 Legacy JWT Secret）。`DEFAULT_TENANT_ID` 真值是
 `00000000-0000-0000-0000-000000000001`（見 HANDOFF），不要信 secrets API 回的值。
 
+### 登出一律 `scope: "local"`；自己驗呼叫者的 Edge Function 一律走 `invokeEdge`
+
+supabase-js 的 `auth.signOut()` 預設是 **global**：同帳號在所有裝置的登入一起清掉。
+而一個帳號常同時登在好幾台（線上有帳號掛 18 個 session）。被清掉的那幾台**畫面不會跳登出**
+—— PostgREST / RLS 只驗簽章，舊憑證最長還能用一小時 —— 只有用 `auth.getUser(token)` 驗身份的
+Edge Function（`staff-create` / `staff-reset-password` / `tenant-purge` / `admin-line-push`…）
+會去問 Auth「這次登入還在不在」→ 403 `session_not_found` → 函式回 401 `invalid token`。
+
+2026-11-14：同帳號的另一支手機 09:13:59 按登出，iPhone 09:15 按「重設密碼」就拿到一句
+`invalid token`，其他功能全部正常，看起來像函式壞了。**被管理員重設密碼的帳號也一樣**
+（Auth 會清掉它全部的登入）。
+
+- 登出寫 `signOut({ scope: "local" })`（`AuthProvider` 的 `SIGN_OUT_THIS_DEVICE`），不要裸呼叫。
+- 前端呼叫這類函式用 `apps/admin/src/lib/edgeInvoke.ts` 的 `invokeEdge`：被拒時先 refresh 重試一次，
+  換不到就由 supabase-js 清掉本機登入、layout 導回登入頁。不要再手寫 `error.context.json()`。
+- 看到「只有某支 Edge Function 回 invalid token、其他都正常」先查 `auth.sessions` 有沒有那個人的列，
+  不要先懷疑函式或部署。
+
+### 查「誰在什麼時候做了什麼」：Management API 的 logs，舊端點和表名都換了
+
+`auth.audit_log_entries` 是**空的**（0 筆），別去那裡找。要查某支 Edge Function 是誰呼叫的、
+誰登入／登出，走：
+
+```bash
+curl -sS --cacert /root/.ccr/ca-bundle.crt -G \
+  "https://api.supabase.com/v1/projects/$SUPABASE_PROJECT_REF/analytics/endpoints/logs" \
+  -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+  --data-urlencode "sql=select timestamp, event_message, log_attributes from logs where source='function_edge_logs' and event_message like 'POST |%staff-reset-password%' order by timestamp desc limit 20" \
+  --data-urlencode "iso_timestamp_start=2026-11-13T14:00:00Z" \
+  --data-urlencode "iso_timestamp_end=2026-11-14T02:00:00Z"
+```
+
+- 舊的 `.../logs.all` 已移除；`function_edge_logs` / `edge_logs` / `auth_logs` 不再是表名，
+  全部在**單一張 `logs`**，用 `source` 欄位分（`edge_logs` 閘道、`function_edge_logs`、`auth_logs`…）。
+  不能 `select *`，沒有 `metadata` 欄位，細節在 `log_attributes`。
+- 呼叫者＝`log_attributes['request.sb.auth_user']`（對 `auth.users.id`），另有
+  `request.headers.cf_connecting_ip`、`request.headers.user_agent`、`request.cf.city`。
+  登入失敗的列**不帶帳號**，只能靠 IP／裝置推。
+- 改了誰＝同一秒閘道那筆 `PUT | 200 | …/auth/v1/admin/users/<被改的人>`。
+- 時間範圍拉太長會**回 0 筆、不報錯**（實測 ~50 小時的區間是空的，切成 24 小時內就有），
+  連打會被 `ThrottlerException` 擋，間隔 ~8 秒。
+- 這是平台紀錄、保留期有限。要長期追得到「誰重設了誰的密碼」，得自己寫表。
+
 ### 重寫 function 前，先 grep 歷史 migration
 
 `supabase/migrations/` 是 append-only，同一支 function / view 常被多支 migration 用 `CREATE OR REPLACE` 修過。若直接基於「最早建立的版本」改寫，會把後面散落的多個修法整個蓋掉，產生 regression。

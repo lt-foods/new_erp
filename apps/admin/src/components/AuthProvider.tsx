@@ -32,6 +32,12 @@ type AuthState = {
 
 const AuthContext = createContext<AuthState | null>(null);
 
+// 登出一律只登出「這一台」。supabase-js 的 signOut() 預設是 global：會把同帳號
+// 在所有裝置的登入一起清掉，而一個帳號常同時登在好幾台（門市共用、手機＋電腦）。
+// 被清掉的那幾台畫面不會跳登出（資料讀寫只驗簽章，最長還能用一小時），
+// 只有自己驗身份的 Edge Function 會回 invalid token（見 lib/edgeInvoke.ts）。
+const SIGN_OUT_THIS_DEVICE = { scope: "local" } as const;
+
 function isPiaopiaoPublisher(session: Session | null): boolean {
   return session?.user.app_metadata?.role === "piaopiao_publisher";
 }
@@ -49,7 +55,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     supabase.auth.getSession().then(({ data }) => {
       if (!mounted) return;
       if (isPiaopiaoPublisher(data.session)) {
-        void supabase.auth.signOut();
+        void supabase.auth.signOut(SIGN_OUT_THIS_DEVICE);
         setSession(null);
       } else {
         setSession(data.session);
@@ -59,7 +65,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
       if (isPiaopiaoPublisher(s)) {
-        void supabase.auth.signOut();
+        void supabase.auth.signOut(SIGN_OUT_THIS_DEVICE);
         setSession(null);
       } else {
         setSession(s);
@@ -94,14 +100,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const sb = getSupabase();
     const { data, error } = await sb.auth.signInWithPassword({ email, password });
     if (!error && isPiaopiaoPublisher(data.session)) {
-      await sb.auth.signOut();
+      await sb.auth.signOut(SIGN_OUT_THIS_DEVICE);
       return { error: "此帳號只能登入漂漂館上架後台" };
     }
     return { error: error?.message ?? null };
   }, []);
 
   const signOut = useCallback(async () => {
-    await getSupabase().auth.signOut();
+    await getSupabase().auth.signOut(SIGN_OUT_THIS_DEVICE);
   }, []);
 
   const value = useMemo<AuthState>(

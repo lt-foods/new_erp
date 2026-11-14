@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
+import { invokeEdge } from "@/lib/edgeInvoke";
 import { useRole } from "@/lib/role";
 import { useAuth } from "@/components/AuthProvider";
 import { Modal } from "@/components/Modal";
@@ -508,22 +509,13 @@ function ResetPasswordModal({
     setErr(null);
     if (password.length < 6) { setErr("密碼至少 6 碼"); return; }
     if (password !== confirmPw) { setErr("兩次輸入的密碼不一致"); return; }
-    const { data, error } = await getSupabase().functions.invoke<{ ok?: boolean; error?: string }>(
+    const { data, error } = await invokeEdge<{ ok?: boolean; error?: string }>(
+      getSupabase(),
       "staff-reset-password",
-      { body: { user_id: row.user_id, password } },
+      { user_id: row.user_id, password },
+      "重設失敗",
     );
-    if (error) {
-      let msg = error.message ?? "重設失敗";
-      try {
-        const ctx = (error as { context?: Response }).context;
-        if (ctx && typeof ctx.json === "function") {
-          const j = await ctx.json();
-          if (j?.error) msg = j.error as string;
-        }
-      } catch { /* 保留原訊息 */ }
-      setErr(msg);
-      return;
-    }
+    if (error) { setErr(error); return; }
     if (!data?.ok) { setErr(data?.error ?? "重設失敗"); return; }
     // 成功後清掉輸入框裡的密碼，畫面不再保留
     setPassword("");
@@ -619,30 +611,17 @@ function CreateStaffModal({
     if (!e || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) { setErr("請輸入有效 Email"); return; }
     if (!displayName.trim()) { setErr("請輸入顯示名"); return; }
     if (password.length > 0 && password.length < 6) { setErr("密碼至少 6 碼（留空則系統自動產生）"); return; }
-    const { data, error } = await getSupabase().functions.invoke<{
+    const { data, error } = await invokeEdge<{
       ok?: boolean; error?: string; email?: string; temp_password?: string;
       password_source?: "admin" | "generated";
-    }>("staff-create", {
-      body: {
-        email: e,
-        display_name: displayName.trim(),
-        role: newRole,
-        stores: Array.from(sel),
-        password,
-      },
-    });
-    if (error) {
-      let msg = error.message ?? "建立失敗";
-      try {
-        const ctx = (error as { context?: Response }).context;
-        if (ctx && typeof ctx.json === "function") {
-          const j = await ctx.json();
-          if (j?.error) msg = j.error as string;
-        }
-      } catch { /* 保留原訊息 */ }
-      setErr(msg);
-      return;
-    }
+    }>(getSupabase(), "staff-create", {
+      email: e,
+      display_name: displayName.trim(),
+      role: newRole,
+      stores: Array.from(sel),
+      password,
+    }, "建立失敗");
+    if (error) { setErr(error); return; }
     if (!data?.ok) { setErr(data?.error ?? "建立失敗"); return; }
     const adminSet = data.password_source === "admin";
     if (!adminSet && !data.temp_password) { setErr("建立成功但未取得臨時密碼，請改用重設密碼或重試"); return; }
