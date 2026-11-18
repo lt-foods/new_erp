@@ -1070,6 +1070,28 @@ remind / share 每帳號每分鐘最多 12 則。真的失敗的貼文，後台�
 （`rpc_line_note_requeue_failed`，規則沿用 `rpc_line_note_queue_posts`）。新增任何「一次分享很多則」的路徑，
 一律走 `line_note_jobs` 讓 worker 節流，不要在一支 handler 裡自己迴圈送。
 
+### 記事本工作整排 `status=404 headers=[["server","legy"]]`：是連線走到 LINE 的 IPv6 入口，不是帳號掉線
+
+linejs 對帶 JWT 的登入（`/S4` 等）會包成加密信封打 `https://gf.line.naver.jp/enc`。
+2026-11-18 11:00 起 8 個帳號的分享／推廣文／讀留言全部
+`Request internal failed: status=404 headers=[["server","legy"],["x-lcr","386"]] body=<>`
+（一個下午 126 則分享、29 則推廣文、120 則結單提醒沒發）。函式紀錄裡同一時間開始出現
+`from [2406:da14:…] for https://gf.line.naver.jp/enc ([2400:dcc0:…]:443)` —— 之前一律是
+`10.32.x.x → 147.92.x.x`。那組 IPv6 位址是 `legy.line-apps.com` 的，不收 `/enc`：
+第一個請求回 404＋`x-lcr: 386`，**同一條連線之後每個請求都是 404（不帶 x-lcr）**，
+所以一個 isolate 裡排在後面的帳號全滅。11/12、11/13、11/16、11/17 早上那幾波 100～200 筆也是它。
+
+- 已改：`retryingFetch`（`_shared/lineNote.ts`）把 `/enc` 改連 `legy-jp-addr.line-apps.com`
+  （`gf.line.naver.jp` 平常 CNAME 到的名字，只有 A 記錄），不通才退回原主機；
+  worker 把這句錯誤比照「被 LINE 限制」退回排隊，不再直接標失敗。
+- 判斷是不是這件事：錯誤**跨帳號同時發生**、每筆 0.2 秒內就失敗、同一波第一筆帶 `x-lcr`。
+  記事本 REST 和 `/SQ1`（發訊息）走 IPv6 沒事，所以已經登入過的帳號在同一個 isolate 裡還會成功幾筆，
+  看起來像「時好時壞」。
+- **不要用匿名 curl 打 `/enc` 來判斷通不通**：不帶憑證的信封不管 IPv4/IPv6 一律回 404＋`x-lcr: 386`。
+- **`Deno.createHttpClient({ localAddress })` 在 Deno 2.1.4（線上 edge-runtime 1.79 對應的版本）實測是被忽略的**，
+  亂填也不報錯 —— 不能拿它來強制 IPv4，要靠主機名。
+- linejs 釘死版本（`@3.5.0`）：寫 `^` 的話每次重部署都會順手升版，出事時分不清是誰的問題。
+
 ### 在 LINE 內建瀏覽器裡，絕對不要把使用者導去 `access.line.me`
 
 LINE 官方明講「LIFF browser 內的 LINE Login 授權請求行為不保證」，實際結果是
