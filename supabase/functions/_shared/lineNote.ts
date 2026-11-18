@@ -113,83 +113,48 @@ export function log(verbose: any, ...args: any[]) {
  * 換到新的沒寫回 DB＝下次拿舊的去換會被拒，等於又要重新掃 QR。
  */
 /**
- * 餵給 linejs 的 `fetch`（Thrift 與記事本 REST 都走它）：瞬斷重試＋加密閘道固定走 IPv4。
+ * 餵給 linejs 的 `fetch`（Thrift 與記事本 REST 都走它）：連線瞬斷時重試。
  *
- * 一、瞬斷重試。對 gf.line.naver.jp 的 HTTP/2 連線常被對方收掉，下一個請求就直接
+ * 對 LINE 的 HTTP/2 連線常被對方收掉，下一個請求就直接
  * `error sending request … client error (SendRequest): connection error: stream closed
  * because of a broken pipe`（160ms 內失敗、job 標 failed）。2026-10-07 一天 608 支 job 有 94 支
  * 這樣死掉。原本只重打一次；11/17、11/18 早上各有 8 篇發文是「重打那一次也斷」才失敗的，
- * 改成最多打 FETCH_ATTEMPTS 趟。只對「送不出去」的錯誤重試；HTTP 回了什麼、逾時中止都原樣丟回去。
- *
- * 二、加密閘道（/enc）固定連 IPv4。2026-11-18 11:00 起分享／推廣文／讀留言整排
- * `Request internal failed: status=404 headers=[["server","legy"],["x-lcr","386"]] body=<>`：
- * Edge Function 換到有 IPv6 的機器上，gf.line.naver.jp 又被解析到 LINE 的雙協定位址
- * （2400:dcc0:…，跟 legy.line-apps.com 同一組），而那組 IPv6 入口不收 /enc 的加密信封 ——
- * 第一個請求回 404＋x-lcr: 386，同一條連線之後每個請求都是 404，整個 isolate 的登入全滅
- * （8 個帳號一起掛，11/12、11/13、11/16、11/17 早上那幾波 100～200 筆也是同一件事）。
- * 記事本 REST 和 /SQ1 走 IPv6 沒事，只有 /enc 中。
- * 做法：/enc 改連 legy-jp-addr.line-apps.com（gf.line.naver.jp 平常 CNAME 到的那個名字，
- * 只有 A 記錄、同一組機器）；它連不上或也回 404 才退回原本的 gf.line.naver.jp。
- * 閘道的 404 是信封沒被收下、請求沒進到後面，換一條路再送不會重複發文。
+ * 所以最多打 FETCH_ATTEMPTS 趟。只對「送不出去」的錯誤重試；HTTP 回了什麼、逾時中止都原樣丟回去。
  */
 const TRANSIENT_FETCH_RE = /error sending request|stream closed|broken pipe|connection (reset|closed|error)|ECONNRESET|EPIPE/i;
 const FETCH_ATTEMPTS = 3;
-export const LINE_ENC_HOST = "gf.line.naver.jp";
-export const LINE_ENC_V4_HOST = "legy-jp-addr.line-apps.com";
-// IPv4 那個名字連續幾次「自己不通、退回原主機卻通」就不再試（LINE 哪天把名字收掉時不要每個請求都白等）。
-// 放模組層級是刻意的：它描述的是這個 isolate 對外連線的狀況，不是某一次呼叫的值。
-const ENC_PIN_MAX_STRIKES = 3;
-let encPinStrikes = 0;
-/** 測試用：把上面那個計數歸零 */
-export function resetEncPinForTest() { encPinStrikes = 0; }
+
+/**
+ * linejs 的加密閘道（LEGY /enc）一律關掉，Thrift 直接走 TLS 打 legy.line-apps.com。
+ *
+ * linejs 預設（"auto"）會把帶 JWT 的 talk 請求（登入那趟 getProfile /S4 等）包成加密信封
+ * 打 https://gf.line.naver.jp/enc。LINE 在 2026-11-18 把那個閘道收掉了（11/12 起一台一台收，
+ * 所以前幾天是早上偶爾一波、11/18 中午後全滅）：不管誰打、打哪個 IP 都回空的 404
+ * （`server: legy`，連線上第一個請求另帶 `x-lcr: 386`），linejs 讀不到 Thrift 就丟
+ * `Request internal failed: status=404 headers=[["server","legy"]…] body=<>`，
+ * 8 個帳號連登入都過不了 —— 一個下午 126 則分享、29 則推廣文、120 則結單提醒沒發。
+ * 不是帳號掉線、不是 IPv6、換主機名／釘 IP 都沒用（當天第一版修法就是釘 IPv4 主機名，白做）。
+ * 上游：evex-dev/linejs#280；LINE 自己的加密報告也寫了傳輸層已從 LEGY 加密改成 TLS。
+ * ⚠ 出事期間不要叫人重新掃 QR：登不進去，還會把手上還能用的 token 登出。
+ */
+const LINE_LEGY = { encrypted: false } as const;
 
 export function retryingFetch(_verbose = false) {
   return async (info: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const orig = new Request(info, init);
-    const url = new URL(orig.url);
-    const isEnc = url.hostname === LINE_ENC_HOST && url.pathname === "/enc";
-    const pinned = isEnc && encPinStrikes < ENC_PIN_MAX_STRIKES;
-    // body 是串流，送過一次就沒了：先收成 bytes，每一趟重新組一個 Request
-    const body = orig.body ? new Uint8Array(await orig.arrayBuffer()) : undefined;
-    const build = (host: string) => {
-      const u = new URL(url);
-      u.hostname = host;
-      return new Request(u, { method: orig.method, headers: orig.headers, body, signal: orig.signal, redirect: orig.redirect });
-    };
-    // 每一趟要連哪個主機。/enc：先打 IPv4 那個名字，都不行最後才多一趟退回原主機
-    const plan: string[] = pinned
-      ? [...Array(FETCH_ATTEMPTS).fill(LINE_ENC_V4_HOST), url.hostname]
-      : Array(FETCH_ATTEMPTS).fill(url.hostname);
-    let pinFailed = false;
-    for (let i = 0; i < plan.length; i++) {
-      const host = plan[i];
-      const last = i === plan.length - 1;
+    // body 是串流，送過一次就沒了：每一趟都從這份原稿 clone，最後一趟才用掉原稿
+    const spare = new Request(info, init);
+    for (let i = 1; ; i++) {
+      const last = i >= FETCH_ATTEMPTS;
       try {
-        const res = await globalThis.fetch(build(host));
-        // 閘道把信封退回來（外層 404、沒有內容）：同一條連線再打也是 404，直接換原主機
-        if (isEnc && res.status === 404 && !last) {
-          await res.body?.cancel().catch(() => {});
-          log(true, `加密閘道 ${host} 回 404（x-lcr=${res.headers.get("x-lcr") ?? "-"}），改連 ${plan[plan.length - 1]}`);
-          pinFailed = true;
-          i = plan.length - 2;
-          continue;
-        }
-        if (pinned) {
-          if (host === LINE_ENC_V4_HOST) encPinStrikes = 0;
-          else if (pinFailed && res.status !== 404 && ++encPinStrikes >= ENC_PIN_MAX_STRIKES) {
-            log(true, `加密閘道的 IPv4 主機 ${LINE_ENC_V4_HOST} 連續 ${encPinStrikes} 次不通，這個 isolate 之後直接連 ${url.hostname}`);
-          }
-        }
-        return res;
+        return await globalThis.fetch(last ? spare : spare.clone());
       } catch (e) {
         const msg = String((e as any)?.message ?? e);
-        if ((e as any)?.name === "AbortError" || (e as any)?.name === "TimeoutError" || !TRANSIENT_FETCH_RE.test(msg) || last) throw e;
-        if (host === LINE_ENC_V4_HOST) pinFailed = true;
-        log(true, `fetch 瞬斷，重試（第 ${i + 1} 趟）：${msg.slice(0, 160)}`);
-        await new Promise((r) => setTimeout(r, 150 * (i + 1)));
+        const name = (e as any)?.name;
+        if (last || name === "AbortError" || name === "TimeoutError" || !TRANSIENT_FETCH_RE.test(msg)) throw e;
+        log(true, `fetch 瞬斷，重試（第 ${i} 趟）：${msg.slice(0, 160)}`);
+        await new Promise((r) => setTimeout(r, 150 * i));
       }
     }
-    throw new Error("unreachable");
   };
 }
 
@@ -213,7 +178,7 @@ export async function clientFromToken(
     accessToken: c.accessToken,
     ...(c.refreshToken ? { refreshToken: c.refreshToken } : {}),
     ...(typeof c.expire === "number" ? { expire: c.expire } : {}),
-  }, { device: opts.device ?? DEFAULT_DEVICE, storage, fetch: retryingFetch(opts.verbose) });
+  }, { device: opts.device ?? DEFAULT_DEVICE, storage, fetch: retryingFetch(opts.verbose), legy: LINE_LEGY });
 
   client.base.on("update:authtoken", (t: string) => opts.onCredential?.({ accessToken: t }));
   // 上面那行掛得再快也趕不上 loginWithAuthToken 裡面 ready() 觸發的那次 refresh，
@@ -237,7 +202,7 @@ export async function loginByQr(opts: {
   const login = loginWithQR(
     { onReceiveQRUrl: opts.onQr, onPincodeRequest: opts.onPin },
     // PersistingStorage：登入時 LINE 交過來的 E2EE 私鑰會留在 storage.e2ee，呼叫端用 readE2EEKeys 撿走存 DB
-    { device: opts.device ?? DEFAULT_DEVICE, storage: new PersistingStorage(), fetch: retryingFetch() },
+    { device: opts.device ?? DEFAULT_DEVICE, storage: new PersistingStorage(), fetch: retryingFetch(), legy: LINE_LEGY },
   );
   const timeout = new Promise<never>((_, reject) =>
     setTimeout(() => reject(new Error("等太久沒掃 QR，請回後台再按一次「登入」")), opts.deadlineMs));

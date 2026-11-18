@@ -66,8 +66,8 @@ const CHAT_PER_MIN_DEFAULT = 5;
 const REMIND_EVERY_MIN_DEFAULT = 2;
 const RESTRICT_GIVE_UP_MS = 6 * 3600_000;   // 排進來 6 小時還送不出去就標失敗，交給人看
 const RESTRICT_HINT = "LINE 暫時不收（被暫時限制使用社群／請稍後再發／連線被 LINE 退回），系統會先停這個帳號一陣子再自動重試，不用手動重發";
-// LINE 的加密閘道把請求整個退回來（外層 404、沒有內容）：連登入那一趟都沒進去，什麼都還沒送出。
-// 2026-11-18 11:00 起整個下午都是這句（原因與修法見 _shared/lineNote.ts 的 retryingFetch），
+// LINE 的閘道把請求整個退回來（404、沒有內容）：連登入那一趟都沒進去，什麼都還沒送出。
+// 2026-11-18 LINE 收掉加密閘道那天整個下午都是這句（見 _shared/lineNote.ts 的 LINE_LEGY），
 // 當時是直接標失敗：126 則分享、29 則推廣文、120 則結單提醒就這樣沒發。現在跟「被限制」同一套處理：
 // 帳號停 2 分鐘、工作退回排隊，通了自己會跑，6 小時還不通才標失敗。
 const LEGY_REJECT_RE = /Request internal failed: status=404 headers=\[\["server","legy"\]/;
