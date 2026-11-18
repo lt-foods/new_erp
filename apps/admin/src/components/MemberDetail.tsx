@@ -70,6 +70,10 @@ type MoveResult = {
   wave_lines_moved: number;
   wave_qty_moved: number;
   needs_line_rebind: boolean;
+  /** false = 選了「訂單留在原店」，只改了會員的取貨店 */
+  orders_moved?: boolean;
+  /** 留在原店沒動的單（orders_moved = false 時才有） */
+  kept?: { order_no: string; status: string; store: string | null }[];
 };
 
 type MergedFrom = {
@@ -186,6 +190,8 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
   const [movePlan, setMovePlan] = useState<MovePlan | null>(null);
   const [moveResult, setMoveResult] = useState<MoveResult | null>(null);
   const [moving, setMoving] = useState(false);
+  /** 改取貨店時未取貨訂單怎麼辦：move = 一起搬到新店、keep = 留在原店 */
+  const [moveMode, setMoveMode] = useState<"move" | "keep">("move");
   const [tenantId, setTenantId] = useState<string | null>(null);
   const [walletAction, setWalletAction] = useState<{ mode: WalletActionMode; reverseTarget?: WalletEntry } | null>(null);
   const role = useRole();
@@ -299,6 +305,7 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
       }
 
       setMoveResult(null);
+      setMoveMode("move");
       setMovePlan(plan);
     } finally {
       setSavingStore(false);
@@ -314,8 +321,11 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
       const { data, error: e } = await sb.rpc("rpc_move_member_to_store", {
         p_member_id: member.id,
         p_to_store_id: movePlan.to_store_id,
+        // 只有「留原店」才帶這個參數：一起搬＝函式預設值，不帶的話
+        // 就算 20261118000000 還沒套上線，原本的搬移也照常能用。
+        ...(moveMode === "keep" ? { p_move_orders: false } : {}),
       });
-      if (e) { alert(`搬移失敗：${translateRpcError(e)}`); return; }
+      if (e) { alert(`${moveMode === "move" ? "搬移" : "儲存"}失敗：${translateRpcError(e)}`); return; }
       setMoveResult(data as MoveResult);
       setReloadTick((n) => n + 1);
     } finally {
@@ -661,8 +671,8 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
           )}
         </div>
         <p className="mt-1 text-xs text-zinc-500">
-          改店會一併把<b>未取貨訂單</b>搬到新店：貨還沒出總倉的，連同總倉待出倉的派貨需求一起改派；
-          貨已經在原店的，開空中轉搬過去（原店要出貨）。按「儲存」會先列出影響範圍讓你確認。
+          有<b>未取貨訂單</b>時，按「儲存」會先問你：訂單<b>一起搬到新店</b>，還是<b>留在原店</b>。
+          一起搬：貨還沒出總倉的，連同總倉待出倉的派貨需求一起改派；貨已經在原店的，開空中轉搬過去（原店要出貨）。
         </p>
       </div>
 
@@ -729,10 +739,27 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
         {movePlan && !moveResult && (
           <div className="space-y-4 text-sm">
             <p className="text-zinc-600 dark:text-zinc-400">
-              這位會員還有未取貨訂單。按下「確認搬移」後，系統會照下面的分類一次處理完：
+              這位會員還有 {moveOrderCount(movePlan)} 張未取貨訂單，這些訂單要怎麼處理？
             </p>
 
-            {movePlan.repoint.length > 0 && (
+            <div className="grid gap-2 sm:grid-cols-2">
+              <MoveModeOption
+                checked={moveMode === "move"}
+                onSelect={() => setMoveMode("move")}
+                disabled={moving}
+                title="訂單一起搬到新店"
+                desc={`之後到 ${movePlan.to_store ?? "新店"} 取貨。`}
+              />
+              <MoveModeOption
+                checked={moveMode === "keep"}
+                onSelect={() => setMoveMode("keep")}
+                disabled={moving}
+                title="訂單留在原店"
+                desc="只改會員的取貨店，這幾張照舊回原店取貨；之後的新訂單才到新店。"
+              />
+            </div>
+
+            {moveMode === "move" && movePlan.repoint.length > 0 && (
               <MoveSection
                 title={`直接改到新店（${movePlan.repoint.length} 張）`}
                 tone="emerald"
@@ -743,7 +770,7 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
               />
             )}
 
-            {movePlan.air.length > 0 && (
+            {moveMode === "move" && movePlan.air.length > 0 && (
               <MoveSection
                 title={`開空中轉搬貨（${movePlan.air.length} 張）`}
                 tone="amber"
@@ -752,13 +779,28 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
               />
             )}
 
-            {movePlan.blocked.length > 0 && (
+            {moveMode === "move" && movePlan.blocked.length > 0 && (
               <MoveSection
                 title={`這次搬不動（${movePlan.blocked.length} 張）`}
                 tone="rose"
                 note="這些單留在原店、取貨地點不變，要另外處理。"
                 rows={movePlan.blocked.map((o) => ({ key: o.order_no, main: o.order_no, sub: o.reason }))}
               />
+            )}
+
+            {moveMode === "keep" && (
+              <>
+                <MoveSection
+                  title={`留在原店不動（${moveOrderCount(movePlan)} 張）`}
+                  tone="zinc"
+                  note="訂單、總倉派貨、庫存都不會變，客人要回原店取貨。"
+                  rows={[...movePlan.repoint, ...movePlan.air, ...movePlan.blocked]
+                    .map((o) => ({ key: o.order_no, main: o.order_no, sub: orderStatusLabel(o.status) }))}
+                />
+                <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                  ⚠️ 這幾張的到貨通知會改從新店的 LINE 發，請提醒客人貨還是在原店拿。
+                </p>
+              </>
             )}
 
             {movePlan.needs_line_rebind && (
@@ -780,7 +822,9 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
                 disabled={moving}
                 className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
               >
-                {moving ? "搬移中…" : "確認搬移"}
+                {moving
+                  ? (moveMode === "move" ? "搬移中…" : "儲存中…")
+                  : (moveMode === "move" ? "確認搬移" : "確認（訂單留原店）")}
               </SpinButton>
             </div>
           </div>
@@ -788,12 +832,28 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
 
         {moveResult && (
           <div className="space-y-4 text-sm">
-            <p className="rounded-md bg-emerald-50 px-3 py-2 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
-              已改到 <b>{movePlan?.to_store}</b>：改指 {moveResult.repointed.length} 張、
-              空中轉 {moveResult.air_shipped.length} 張
-              {moveResult.wave_lines_moved > 0 && <>、總倉改派 {moveResult.wave_lines_moved} 列（{moveResult.wave_qty_moved} 件）</>}
-              {moveResult.blocked.length > 0 && <>、{moveResult.blocked.length} 張未搬</>}。
-            </p>
+            {moveResult.orders_moved === false ? (
+              <p className="rounded-md bg-emerald-50 px-3 py-2 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
+                會員的取貨店已改到 <b>{movePlan?.to_store}</b>，
+                {moveResult.kept?.length ?? 0} 張未取貨訂單留在原店沒動。
+              </p>
+            ) : (
+              <p className="rounded-md bg-emerald-50 px-3 py-2 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
+                已改到 <b>{movePlan?.to_store}</b>：改指 {moveResult.repointed.length} 張、
+                空中轉 {moveResult.air_shipped.length} 張
+                {moveResult.wave_lines_moved > 0 && <>、總倉改派 {moveResult.wave_lines_moved} 列（{moveResult.wave_qty_moved} 件）</>}
+                {moveResult.blocked.length > 0 && <>、{moveResult.blocked.length} 張未搬</>}。
+              </p>
+            )}
+
+            {(moveResult.kept?.length ?? 0) > 0 && (
+              <MoveSection
+                title="留在原店的訂單"
+                tone="zinc"
+                note="客人要回原店取貨。"
+                rows={(moveResult.kept ?? []).map((o) => ({ key: o.order_no, main: o.order_no, sub: o.store ?? "—" }))}
+              />
+            )}
 
             {moveResult.air_shipped.length > 0 && (
               <MoveSection
@@ -1274,19 +1334,59 @@ function AvatarStack({
   );
 }
 
+/** 改取貨店預覽裡的未取貨訂單總張數（三類加總） */
+function moveOrderCount(plan: MovePlan): number {
+  return plan.repoint.length + plan.air.length + plan.blocked.length;
+}
+
+/** 改取貨店彈窗最上面的二選一：訂單一起搬／留在原店 */
+function MoveModeOption({
+  checked, onSelect, disabled, title, desc,
+}: {
+  checked: boolean;
+  onSelect: () => void;
+  disabled: boolean;
+  title: string;
+  desc: string;
+}) {
+  return (
+    <label
+      className={`flex cursor-pointer items-start gap-2 rounded-md border p-3 ${
+        checked
+          ? "border-emerald-500 bg-emerald-50 dark:border-emerald-600 dark:bg-emerald-950/30"
+          : "border-zinc-300 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+      } ${disabled ? "opacity-60" : ""}`}
+    >
+      <input
+        type="radio"
+        name="member-move-mode"
+        className="mt-0.5 accent-emerald-600"
+        checked={checked}
+        onChange={onSelect}
+        disabled={disabled}
+      />
+      <span>
+        <span className="block text-sm font-semibold">{title}</span>
+        <span className="mt-0.5 block text-xs text-zinc-500">{desc}</span>
+      </span>
+    </label>
+  );
+}
+
 /** 改取貨店預覽／結果裡的一段分類清單 */
 function MoveSection({
   title, note, tone, rows,
 }: {
   title: string;
   note: string;
-  tone: "emerald" | "amber" | "rose";
+  tone: "emerald" | "amber" | "rose" | "zinc";
   rows: { key: string; main: string; sub: string }[];
 }) {
   const toneCls = {
     emerald: "border-emerald-300 dark:border-emerald-900",
     amber:   "border-amber-300 dark:border-amber-900",
     rose:    "border-rose-300 dark:border-rose-900",
+    zinc:    "border-zinc-300 dark:border-zinc-700",
   }[tone];
   return (
     <div className={`rounded-md border ${toneCls} p-3`}>
