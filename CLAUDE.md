@@ -1070,27 +1070,30 @@ remind / share 每帳號每分鐘最多 12 則。真的失敗的貼文，後台�
 （`rpc_line_note_requeue_failed`，規則沿用 `rpc_line_note_queue_posts`）。新增任何「一次分享很多則」的路徑，
 一律走 `line_note_jobs` 讓 worker 節流，不要在一支 handler 裡自己迴圈送。
 
-### 記事本工作整排 `status=404 headers=[["server","legy"]]`：是連線走到 LINE 的 IPv6 入口，不是帳號掉線
+### 記事本工作整排 `status=404 headers=[["server","legy"]]`：LINE 把加密閘道 `/enc` 收掉了，不是帳號掉線
 
-linejs 對帶 JWT 的登入（`/S4` 等）會包成加密信封打 `https://gf.line.naver.jp/enc`。
-2026-11-18 11:00 起 8 個帳號的分享／推廣文／讀留言全部
-`Request internal failed: status=404 headers=[["server","legy"],["x-lcr","386"]] body=<>`
-（一個下午 126 則分享、29 則推廣文、120 則結單提醒沒發）。函式紀錄裡同一時間開始出現
-`from [2406:da14:…] for https://gf.line.naver.jp/enc ([2400:dcc0:…]:443)` —— 之前一律是
-`10.32.x.x → 147.92.x.x`。那組 IPv6 位址是 `legy.line-apps.com` 的，不收 `/enc`：
-第一個請求回 404＋`x-lcr: 386`，**同一條連線之後每個請求都是 404（不帶 x-lcr）**，
-所以一個 isolate 裡排在後面的帳號全滅。11/12、11/13、11/16、11/17 早上那幾波 100～200 筆也是它。
+linejs 預設會把帶 JWT 的 talk 請求（登入那趟 `getProfile /S4` 等）包成加密信封打
+`https://gf.line.naver.jp/enc`。LINE 在 2026-11-18 把那個閘道收掉（11/12 起一台一台收，
+所以前幾天是早上偶爾一波 100～200 筆、11/18 中午後全滅）：不管誰打、打哪個 IP，都回空的 404
+（`server: legy`，連線上第一個請求另帶 `x-lcr: 386`）→
+`Request internal failed: status=404 headers=[["server","legy"],["x-lcr","386"]] body=<>`。
+8 個帳號連登入都過不了，一個下午 126 則分享、29 則推廣文、120 則結單提醒沒發。
 
-- 已改：`retryingFetch`（`_shared/lineNote.ts`）把 `/enc` 改連 `legy-jp-addr.line-apps.com`
-  （`gf.line.naver.jp` 平常 CNAME 到的名字，只有 A 記錄），不通才退回原主機；
-  worker 把這句錯誤比照「被 LINE 限制」退回排隊，不再直接標失敗。
-- 判斷是不是這件事：錯誤**跨帳號同時發生**、每筆 0.2 秒內就失敗、同一波第一筆帶 `x-lcr`。
-  記事本 REST 和 `/SQ1`（發訊息）走 IPv6 沒事，所以已經登入過的帳號在同一個 isolate 裡還會成功幾筆，
-  看起來像「時好時壞」。
-- **不要用匿名 curl 打 `/enc` 來判斷通不通**：不帶憑證的信封不管 IPv4/IPv6 一律回 404＋`x-lcr: 386`。
-- **`Deno.createHttpClient({ localAddress })` 在 Deno 2.1.4（線上 edge-runtime 1.79 對應的版本）實測是被忽略的**，
-  亂填也不報錯 —— 不能拿它來強制 IPv4，要靠主機名。
+- 修法：`_shared/lineNote.ts` 的 `LINE_LEGY = { encrypted: false }`，Thrift 直接走 TLS 打
+  `legy.line-apps.com`（官方 App 現在也是這樣）。**不要拿掉，也不要改回 `"auto"`。**
+  上游：evex-dev/linejs#280（寫這段時上游還沒出修正版，升版不會好）。
+- **我第一次判斷錯了，白做一輪（#1155）**：看到失敗開始的同時紀錄裡出現 IPv6 位址，就認定是
+  「走到 LINE 的 IPv6 入口」，把 `/enc` 釘到只有 A 記錄的主機名 —— 部署後照樣 404。
+  當時其實已經有反證：**匿名 curl 從 IPv4 打 `/enc` 也是 404＋`x-lcr: 386`**，我把它解釋成
+  「沒帶憑證本來就會被拒」。同一個回應碼出現在「理論上不該壞」的路徑上時，先懷疑理論。
+- 第三方服務突然整排壞，**先搜上游 issue**（錯誤字串原樣丟去搜），再自己推理。這次上游當天就有人回報。
+- ⚠ 出事期間**不要叫人重新掃 QR**：登不進去，還會把手上還能用的 token 登出（上游有人中）。
+- 判斷是不是這一類：錯誤**跨帳號同時發生**、每筆 0.2 秒內就失敗。記事本 REST 和 `/SQ1` 不走 `/enc`，
+  所以同一個 isolate 裡已經登入過的帳號還會成功幾筆，看起來像「時好時壞」。
+- worker 把這句錯誤比照「被 LINE 限制」退回排隊（帳號停 2 分鐘、6 小時還不通才標失敗），不再直接標失敗。
 - linejs 釘死版本（`@3.5.0`）：寫 `^` 的話每次重部署都會順手升版，出事時分不清是誰的問題。
+- `Deno.createHttpClient({ localAddress })` 在 Deno 2.1.4（線上 edge-runtime 1.79 對應的版本）實測被忽略、
+  亂填也不報錯 —— 哪天真的要強制 IPv4，不能靠它。
 
 ### 在 LINE 內建瀏覽器裡，絕對不要把使用者導去 `access.line.me`
 
