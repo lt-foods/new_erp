@@ -1568,6 +1568,7 @@ export default function CampaignsListPage() {
                 onSaved={() => { setModal(null); setReloadTick((t) => t + 1); }}
                 onCancel={() => setModal(null)}
                 onTotalCapChange={setFormTotalCap}
+                resyncTick={resyncTick}
               />
             </div>
             <div className="border-t border-zinc-200 pt-4 dark:border-zinc-800">

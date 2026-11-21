@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
@@ -81,6 +81,7 @@ export function CampaignForm({
   onCancel,
   submitLabel,
   onTotalCapChange,
+  resyncTick,
 }: {
   initial?: CampaignFormValues;
   onSaved?: (id: number) => void;
@@ -88,11 +89,40 @@ export function CampaignForm({
   submitLabel?: string;
   /** 總量上限欄一改就回報目前的值（編輯視窗上方的紅字要用） */
   onTotalCapChange?: (value: number | null) => void;
+  /** 上方「重新同步商品/價格」每套用一次就 +1：團名被同步改掉了，表單裡那格要跟著換 */
+  resyncTick?: number;
 }) {
   const router = useRouter();
   const role = useRole();
   const admin = isAdmin(role);
   const [v, setV] = useState<CampaignFormValues>(initial ?? emptyCampaignValues);
+
+  // 「重新同步商品/價格」會直接改掉這一團的團名與文案，而這張表單手上還是開視窗那一刻的舊值 ——
+  // 不換掉的話，同步完順手按「儲存」就把舊團名寫回去（文案那一半見 onSubmit 的重讀）。
+  // 團名只在「系統裡的真的變了」才換（同一個 tick 標贈品時也會跳，那時不要蓋掉還沒存的手打團名）。
+  const campaignId = v.id;
+  const savedNameRef = useRef(initial?.name ?? "");
+  useEffect(() => {
+    if (!resyncTick || campaignId == null) return;
+    let cancelled = false;
+    (async () => {
+      const { data } = await getSupabase()
+        .from("group_buy_campaigns")
+        .select("name, description")
+        .eq("id", campaignId)
+        .maybeSingle();
+      if (cancelled || !data) return;
+      const dbName = data.name as string;
+      const nameMoved = dbName !== savedNameRef.current;
+      savedNameRef.current = dbName;
+      setV((prev) => ({
+        ...prev,
+        name: nameMoved ? dbName : prev.name,
+        description: (data.description as string | null) ?? null,
+      }));
+    })();
+    return () => { cancelled = true; };
+  }, [resyncTick, campaignId]);
   // 店家自開團＝店長自己的團，「儲存」不能鎖在 isAdmin 後面：店長把狀態選成
   // 「已收單」卻沒有鈕可以按，畫面只寫「僅管理員可儲存開團」（2026-09-01 回報）。
   // 真正的權限在 DB —— rpc_upsert_campaign 對自開團會過 _assert_own_store，
@@ -179,20 +209,40 @@ export function CampaignForm({
         const { error: lnErr } = await getSupabase().rpc("rpc_set_campaign_line_note", { p_id: v.id, p_enabled: lineNoteOn });
         if (lnErr) throw lnErr;
       }
+      // 這張表單不編輯、只「保留原值送回」的欄位，存檔當下重讀，不用開視窗那一刻的那份：
+      // rpc_upsert_campaign 是整欄覆寫（description = p_description），手上的舊值送回去就是把
+      // 別處剛寫進去的蓋掉。2026-11-22：「重新同步」把商品文案帶進團，10 秒後這裡按「儲存」
+      // 又寫回舊文案 → LINE 記事本「更新貼文」印出來的永遠是舊的（GRP-20261121-042）。
+      // 另一台裝置同步的也算，所以不能只靠 resyncTick。
+      let kept = { description: v.description, pickup_deadline: v.pickup_deadline, pickup_days: v.pickup_days, notes: v.notes };
+      if (v.id != null) {
+        const { data: cur, error: curErr } = await getSupabase()
+          .from("group_buy_campaigns")
+          .select("description, pickup_deadline, pickup_days, notes")
+          .eq("id", v.id)
+          .maybeSingle();
+        if (curErr || !cur) throw new Error(`讀不到這個團目前的資料，這次沒有儲存：${curErr?.message ?? "沒有回應"}`);
+        kept = {
+          description: (cur.description as string | null) ?? null,
+          pickup_deadline: (cur.pickup_deadline as string | null) ?? null,
+          pickup_days: cur.pickup_days != null ? Number(cur.pickup_days) : null,
+          notes: (cur.notes as string | null) ?? null,
+        };
+      }
       const { data, error: err } = await getSupabase().rpc("rpc_upsert_campaign", {
         p_id: v.id,
         p_campaign_no: v.campaign_no.trim(),
         p_name: (v.name || "(open campaign)").trim(),
-        p_description: v.description,
+        p_description: kept.description,
         p_status: v.status,
         p_close_type: v.close_type,
         p_start_at: v.start_at,
         p_end_at: v.end_at,
         p_customer_end_at: v.customer_end_at,
-        p_pickup_deadline: v.pickup_deadline,
-        p_pickup_days: v.pickup_days,
+        p_pickup_deadline: kept.pickup_deadline,
+        p_pickup_days: kept.pickup_days,
         p_total_cap_qty: v.total_cap_qty,
-        p_notes: v.notes,
+        p_notes: kept.notes,
         p_is_for_shop: v.is_for_shop,
         p_sales_channel: v.sales_channel,
       });
