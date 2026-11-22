@@ -1241,6 +1241,10 @@ curl -sS <url> | grep -o '<meta property="og[^>]*>'
 
 - **原價要比該團單價高才顯示**，判準只有一處：liff-api 的 `effectiveOriginalPrice`
   （列表卡片與商品頁共用）。不要在前端另外寫一份，會出現卡片有劃、點進去沒劃。
+- **特價數字的樣式是老闆給樣稿定的**（`apps/member/src/components/SalePrice.tsx`，2026-11-22）：
+  售價粗紅字墊一抹黃色筆刷＋右上兩撇閃光，原價灰色斜體壓一條紅斜線；卡片上已訂購／瀏覽數在左、
+  特價數字在右。**不要加外框或整塊底牌** —— 黃底黑框的「唐吉訶德」牌子做過，老闆看了說不要。
+  沒有原價的商品維持原本的品牌色價格。
 - **這三欄的讀寫都不併進既有的查詢／RPC**：liff-api 與後台都是「另外一句、失敗就當沒有」，
   寫入走 `rpc_set_sku_original_price` / `rpc_set_campaign_promo_label` / `rpc_set_product_intro_video`。
   併進 `listActiveCampaigns` 的主查詢，SQL 沒套時整個商城列表會 500；

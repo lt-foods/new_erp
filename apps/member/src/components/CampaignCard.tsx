@@ -5,6 +5,7 @@ import Link from "next/link";
 import Countdown from "./Countdown";
 import OrderedCount from "./OrderedCount";
 import ViewCount from "./ViewCount";
+import SalePrice from "./SalePrice";
 import { cleanCampaignText } from "@/lib/text";
 
 export type CampaignSummary = {
@@ -139,6 +140,7 @@ export default function CampaignCard({
     ? `$${campaign.min_price.toLocaleString()}${campaign.max_price > campaign.min_price ? " 起" : ""}`
     : "—";
   const originalPrice = campaignOriginalPrice(campaign);
+  const priceSuffix = campaign.max_price > campaign.min_price ? "起" : undefined;
 
   if (variant === "hero") {
     return (
@@ -198,16 +200,13 @@ export default function CampaignCard({
             {cleanCampaignText(campaign.name)}
           </h3>
           <div className="flex items-baseline justify-between gap-2">
-            <span className="flex items-baseline gap-2">
+            {originalPrice !== null ? (
+              <SalePrice price={campaign.min_price} original={originalPrice} suffix={priceSuffix} size="lg" layout="inline" className="self-center" />
+            ) : (
               <span className="brand-gradient-text text-[28px] font-extrabold tabular-nums leading-none">
                 {priceText}
               </span>
-              {originalPrice !== null && (
-                <span className="text-[15px] tabular-nums leading-none text-[var(--secondary-label)] line-through">
-                  ${originalPrice.toLocaleString()}
-                </span>
-              )}
-            </span>
+            )}
             <span className="text-[13px] text-[var(--secondary-label)]">
               共 {campaign.item_count} 項
             </span>
@@ -283,25 +282,29 @@ export default function CampaignCard({
             </div>
           );
         })()}
-        <div className="flex items-baseline justify-between gap-2">
-          {/* 原價疊在售價上面（不是旁邊）：兩欄格線很窄，旁邊還有已訂購／瀏覽數 */}
-          <div>
-            {originalPrice !== null && (
-              <div className="mb-1 text-[12px] tabular-nums leading-none text-[var(--secondary-label)] line-through">
-                ${originalPrice.toLocaleString()}
-              </div>
-            )}
+        {originalPrice !== null ? (
+          // 特價（老闆 2026-11-22 的樣稿）：已訂購／瀏覽數在左、特價數字在右（原價疊在售價上面）。
+          // flex-wrap：四位數的價格放不下時，特價數字自己掉到下一列靠右，不會把卡片撐破。
+          <div className="flex flex-wrap items-end justify-between gap-x-1 gap-y-1.5">
+            <div className="flex flex-col items-start gap-1 pb-0.5">
+              <OrderedCount count={campaign.ordered_qty} size="sm" />
+              <ViewCount count={campaign.view_count} />
+            </div>
+            <SalePrice price={campaign.min_price} original={originalPrice} suffix={priceSuffix} size="md" className="ml-auto" />
+          </div>
+        ) : (
+          <div className="flex items-baseline justify-between gap-2">
             <div className="brand-gradient-text text-[24px] font-extrabold tabular-nums leading-none">
               {priceText}
             </div>
+            {/* 已訂購 / 瀏覽數直向堆疊在價格右邊 —— 卡片是兩欄格線，
+                跟倒數同一列會擠爆（倒數字串長達「14 天 23:19:10」）。 */}
+            <div className="flex shrink-0 flex-col items-end gap-1">
+              <OrderedCount count={campaign.ordered_qty} size="sm" />
+              <ViewCount count={campaign.view_count} />
+            </div>
           </div>
-          {/* 已訂購 / 瀏覽數直向堆疊在價格右邊 —— 卡片是兩欄格線，
-              跟倒數同一列會擠爆（倒數字串長達「14 天 23:19:10」）。 */}
-          <div className="flex shrink-0 flex-col items-end gap-1">
-            <OrderedCount count={campaign.ordered_qty} size="sm" />
-            <ViewCount count={campaign.view_count} />
-          </div>
-        </div>
+        )}
         {campaign.end_at && (
           <div className="inline-flex items-center gap-1 rounded-md bg-[var(--brand-soft)] px-1.5 py-0.5 text-[12px] font-semibold tabular-nums text-[var(--brand-strong)]">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} className="h-3 w-3 shrink-0">
