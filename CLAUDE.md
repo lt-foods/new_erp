@@ -958,6 +958,25 @@ SELECT count(*) FROM customer_orders WHERE order_no LIKE '<你的前綴>-%';
 `order_kind='restock'` 與 `order_no LIKE 'SP-%'`，容器單走 `restock` 就不會撞
 一店一單的唯一索引。
 
+## 開團 (group_buy_campaigns)
+
+### `rpc_upsert_campaign` 是整欄覆寫 —— 表單沒在編輯的欄位，存檔當下要重讀
+
+`rpc_upsert_campaign` 更新時 `description = p_description`（不是 COALESCE），而編輯開團的表單
+（`CampaignForm`）對文案 / 取貨截止 / 取貨天數 / 備註是「不編輯、保留原值送回」。
+它手上那份是**開視窗那一刻**讀的，同一個視窗上方的「重新同步商品/價格」
+（`rpc_resync_campaign_from_product`）卻會直接改掉團名與文案。
+
+2026-11-22 GRP-20261121-042：商品文案改了 → 按「重新同步」→ 確認同步（文案進團了）→
+10 秒後順手按下方「儲存」→ 舊文案又被寫回去。之後 LINE 記事本按幾次「更新貼文」都是舊的
+（貼文讀的是**團**文案，不是商品文案），而更新本身回成功、沒有任何錯誤。
+紀錄上每一筆 resync 套用後面都跟著一筆 `rpc_upsert_campaign`，就是這個。
+
+- 表單送回「不是自己在編輯」的欄位之前，一律當場重讀（已修：`CampaignForm` onSubmit）。
+  另一台裝置同步的也算，所以只在同步後刷新表單不夠。
+- 「更新貼文沒變」先比三份：商品文案、團文案、`line_note_posts.text`。
+  前兩份不一樣＝沒同步或被蓋回去；後兩份一樣而 LINE 上不一樣才是 worker 的問題。
+
 ## 採購單 (purchase_orders)
 
 ### 斷貨會「拆單」，而且要能回復 —— 一律走 `_stockout_po_items`
