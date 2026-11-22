@@ -86,7 +86,7 @@ export function NoteVideoPicker({ current, onPick }: { current: string; onPick: 
       {open && (
         <div className="mt-2 space-y-2 rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-zinc-500">各社群記事本最近貼的影片（新的在前）。挑一支，再按下方「儲存」才會生效。</span>
+            <span className="text-xs text-zinc-500">各社群記事本最近貼的影片（新的在前）。挑一支之後，還要按存檔才會生效。</span>
             <SpinButton
               type="button"
               onClick={sync}
@@ -104,8 +104,9 @@ export function NoteVideoPicker({ current, onPick }: { current: string; onPick: 
               還沒有記到影片。剛在記事本貼了影片的話，按右上角「去 LINE 再讀一次」。
             </p>
           )}
+          {/* 卡片固定在 ~140px 寬：編輯開團的視窗很寬，照欄數平分的話一支直式影片會佔掉半個畫面 */}
           {rows !== null && rows.length > 0 && (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(132px,1fr))] gap-3">
               {rows.map((r) => {
                 const url = lineNoteVideoUrl(r);
                 if (!url) return null;

@@ -18,6 +18,7 @@ import { CampaignForm, type CampaignFormValues } from "@/components/CampaignForm
 import { CampaignOrdersPanel } from "@/components/CampaignOrdersPanel";
 import { CampaignItemsTable } from "@/components/CampaignItemsTable";
 import { CampaignPromoLabelField } from "@/components/CampaignPromoLabelField";
+import { CampaignVideoField } from "@/components/CampaignVideoField";
 import { DatePicker } from "@/components/DatePicker";
 import SpinButton from "@/components/SpinButton";
 import ConfidenceChevrons, { confidenceTextColor, PredictRange } from "@/components/ConfidenceChevrons";
@@ -1564,6 +1565,7 @@ export default function CampaignsListPage() {
               onResynced={() => { setResyncTick((t) => t + 1); setReloadTick((t) => t + 1); }}
             />
             <CampaignPromoLabelField key={modal.values.id!} campaignId={modal.values.id!} />
+            <CampaignVideoField key={`video-${modal.values.id!}`} campaignId={modal.values.id!} />
             <div className="border-t border-zinc-200 pt-4 dark:border-zinc-800">
               <CampaignForm
                 initial={modal.values}

@@ -8,8 +8,8 @@ import { CategoryCombobox, type CategoryOption } from "@/components/CategoryComb
 import { SupplierCombobox } from "@/components/SupplierCombobox";
 import { RichTextEditor } from "@/components/RichTextEditor";
 import SpinButton from "@/components/SpinButton";
-import { resolveTikTokShortLink, videoLinkStatus } from "@/lib/videoLink";
-import { NoteVideoPicker } from "@/components/NoteVideoPicker";
+import { finalizeVideoLink, videoLinkStatus } from "@/lib/videoLink";
+import { VideoLinkEditor } from "@/components/VideoLinkEditor";
 
 type Status = "draft" | "active" | "inactive" | "discontinued";
 type StorageType = "room_temp" | "refrigerated" | "frozen" | "meal_train";
@@ -89,10 +89,9 @@ export function ProductForm({
 
   // 介紹影片連結（products.intro_video_url，20261122000000）。不在 rpc_upsert_product 的參數裡，
   // 另外讀、另外存（rpc_set_product_intro_video）；讀不到（SQL 還沒套）就當沒有。
+  // 同一欄在「編輯開團」也改得到（CampaignVideoField），兩邊寫的是同一個商品欄位。
   const [videoUrl, setVideoUrl] = useState("");
   const [savedVideoUrl, setSavedVideoUrl] = useState("");
-  const [videoResolving, setVideoResolving] = useState(false);
-  const [videoNote, setVideoNote] = useState<string | null>(null);
   const productId = values.id;
   useEffect(() => {
     if (productId == null) return;
@@ -110,22 +109,6 @@ export function ProductForm({
     })();
     return () => { cancelled = true; };
   }, [productId]);
-
-  // TikTok App 複製出來的是短連結，嵌不了；換成帶影片代號的網址。換不到就維持原樣（回傳原字串）。
-  async function normalizeVideoUrl(raw: string): Promise<string> {
-    const trimmed = raw.trim();
-    if (videoLinkStatus(trimmed).kind !== "tiktok_short") return trimmed;
-    setVideoResolving(true);
-    const resolved = await resolveTikTokShortLink(trimmed);
-    setVideoResolving(false);
-    if (resolved) {
-      setVideoNote("已把 TikTok 短連結換成可以直接播放的網址。");
-      setVideoUrl(resolved);
-      return resolved;
-    }
-    setVideoNote("這個 TikTok 短連結換不到影片（可能失效或不公開）。照樣可以存，客人點了會跳去 TikTok 開啟。");
-    return trimmed;
-  }
 
   useEffect(() => {
     (async () => {
@@ -237,7 +220,8 @@ export function ProductForm({
     const newId = Number(data);
     // 影片連結有改才存。商品本體已經存好了，這一步失敗要講清楚是哪一半沒存到。
     if (videoUrl.trim() !== savedVideoUrl) {
-      const finalUrl = await normalizeVideoUrl(videoUrl);
+      const finalUrl = await finalizeVideoLink(videoUrl);
+      setVideoUrl(finalUrl);
       const { error: vErr } = await getSupabase().rpc("rpc_set_product_intro_video", {
         p_product_id: newId,
         p_url: finalUrl || null,
@@ -391,17 +375,7 @@ export function ProductForm({
       </Field>
 
       <Field label="介紹影片連結（選填）">
-        <input
-          type="url"
-          inputMode="url"
-          value={videoUrl}
-          onChange={(e) => { setVideoUrl(e.target.value); setVideoNote(null); }}
-          onBlur={() => { void normalizeVideoUrl(videoUrl); }}
-          placeholder="從下方挑 LINE 記事本的影片，或貼上 YouTube / TikTok / IG Reel / Facebook 影片的連結"
-          className={inputClass}
-        />
-        <VideoLinkHint url={videoUrl} resolving={videoResolving} note={videoNote} />
-        <NoteVideoPicker current={videoUrl} onPick={(url) => { setVideoUrl(url); setVideoNote(null); }} />
+        <VideoLinkEditor value={videoUrl} onChange={setVideoUrl} inputClassName={inputClass} />
       </Field>
 
       <details
@@ -497,48 +471,6 @@ export function ProductForm({
         </SpinButton>
       </div>
     </form>
-  );
-}
-
-// 貼完連結當場講「客人會看到什麼」：能直接播、只能跳出去開、還是根本不是網址。
-function VideoLinkHint({ url, resolving, note }: { url: string; resolving: boolean; note: string | null }) {
-  const cls = "mt-1 block text-[11px]";
-  if (resolving) return <span className={`${cls} text-zinc-500`}>正在向 TikTok 查這支影片…</span>;
-  const st = videoLinkStatus(url);
-  const noteLine = note ? <span className={`${cls} text-zinc-500`}>{note}</span> : null;
-  if (st.kind === "empty") {
-    return (
-      <span className={`${cls} text-zinc-500`}>
-        有填的話，會員商品頁會出現一個浮動的小視窗自動播放這支影片（客人可以拖動、可以關掉），點一下放大看有聲音的完整版。影片要設成公開。
-      </span>
-    );
-  }
-  if (st.kind === "invalid") {
-    return <span className={`${cls} text-red-600`}>這不是 https:// 開頭的網址，請重新複製影片的連結。</span>;
-  }
-  if (st.kind === "embed") {
-    return (
-      <>
-        <span className={`${cls} text-emerald-700 dark:text-emerald-400`}>
-          ✓ {st.label === "影片" ? "影片檔" : `${st.label} 影片`}，會員商品頁會出現浮動小視窗
-          {st.label === "LINE 記事本" || st.label === "影片" || st.label === "YouTube" ? "，而且會自動播放（靜音）。" : "。"}
-        </span>
-        {st.label === "Instagram" && (
-          <span className={`${cls} text-amber-700 dark:text-amber-400`}>
-            Instagram 不讓影片在小視窗裡自動播放，客人看到的會是一張靜止的預覽、點了才播。要自動播請改貼 YouTube、TikTok 或影片檔的連結。
-          </span>
-        )}
-        {noteLine}
-      </>
-    );
-  }
-  if (st.kind === "tiktok_short") {
-    return noteLine ?? <span className={`${cls} text-zinc-500`}>TikTok 短連結，離開這一格時會自動換成可以直接播放的網址。</span>;
-  }
-  return (
-    <span className={`${cls} text-amber-700 dark:text-amber-400`}>
-      這種連結沒辦法嵌在頁面裡播：不會有浮動小視窗，只有一顆「影片介紹」按鈕，客人點了會跳去開這個連結。要小視窗請貼 YouTube、TikTok、IG Reel、Facebook 影片或影片檔（.mp4）的連結。
-    </span>
   );
 }
 

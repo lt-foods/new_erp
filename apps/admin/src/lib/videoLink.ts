@@ -42,3 +42,13 @@ export async function resolveTikTokShortLink(raw: string): Promise<string | null
     return null;
   }
 }
+
+/**
+ * 存檔前的最後整理：去頭尾空白；TikTok 短連結換成帶影片代號的播放器網址（換不到就原樣）。
+ * 輸入框離開時會做一次，但使用者可能貼完沒離開欄位就按存，所以存檔那一刻一定要再呼叫。
+ */
+export async function finalizeVideoLink(raw: string): Promise<string> {
+  const trimmed = raw.trim();
+  if (videoLinkStatus(trimmed).kind !== "tiktok_short") return trimmed;
+  return (await resolveTikTokShortLink(trimmed)) ?? trimmed;
+}

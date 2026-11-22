@@ -1269,6 +1269,11 @@ curl -sS <url> | grep -o '<meta property="og[^>]*>'
   - `line_note_videos` 只記「哪個社群哪一篇有哪支影片」，**不存檔案**（存進自己的空間，每位進商品頁的
     客人都耗我們的流量）。worker 在 `jobRead` 列記事本時順手記（`recordNoteVideos`，不多打 LINE）；
     後台商品頁「從 LINE 記事本挑影片 → 去 LINE 再讀一次」打 `sync_note_videos`（每個社群一次 list）。
+  - **設定入口有兩個、存的是同一欄**：商品編輯頁，以及「編輯開團」裡的「商品頁介紹影片」
+    （`CampaignVideoField`，老闆 11/22：「把影片的設定放到開團裡面」）。影片還是記在**商品**上
+    （同一個商品下次再開團自動帶），開團那邊只是多一個入口、自己一顆「存」。
+    不要改成另開一欄存在團上 —— 會變成兩份影片要決定誰蓋誰，而且每開一團都要重設。
+    輸入區共用 `VideoLinkEditor`，存檔前一定要過 `finalizeVideoLink`。
   - 影片貼文常常**沒有文字**，所以不做自動對商品，由人在商品頁挑（`NoteVideoPicker`）。
     挑了存進 `products.intro_video_url` 的就是那個 CDN 網址（橫式加 `#landscape`），跟清單表沒有外鍵。
   - 那篇貼文在 LINE 上被刪掉的話，檔案多半也會跟著消失；商品頁的小視窗就播不出來，要重新挑。
