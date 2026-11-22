@@ -20,6 +20,7 @@ import { logCaught } from "@/lib/clientLog";
 import { detectClientChannel } from "@/lib/clientChannel";
 import { backOrPush } from "@/lib/navBack";
 import LineBindGate from "@/components/LineBindGate";
+import VideoIntro from "@/components/VideoIntro";
 
 /**
  * liff-api 載入團購失敗時給客人看的文案。
@@ -89,6 +90,10 @@ type CampaignDetail = {
    * 舊版後端沒有這個欄位 → undefined，一律當可下單（那時候不可下單的團根本 404）。
    */
   available?: boolean;
+  /** 優惠標籤（後台每團自己打，例：獨家優惠）。後端未部署前沒有這個欄位。 */
+  promo_label?: string | null;
+  /** 商品介紹影片連結（IG / TikTok / YouTube / FB）；有值就在圖片右下角出「影片介紹」小框。 */
+  intro_video_url?: string | null;
 };
 
 type Item = {
@@ -99,9 +104,22 @@ type Item = {
   variant_name: string | null;
   image_url: string | null;
   unit_price: number;
+  /** 原價（後端只在它比 unit_price 高時回）；有值就在售價旁畫刪除線。 */
+  original_price?: number | null;
   cap_qty: number | null;
   ordered_qty: number;
 };
+
+/** 售價旁邊那個劃掉的原價。沒有原價就什麼都不畫。 */
+function OriginalPrice({ item, className = "text-[13px]" }: { item: Item; className?: string }) {
+  const orig = Number(item.original_price ?? 0);
+  if (!(orig > Number(item.unit_price))) return null;
+  return (
+    <span className={`tabular-nums leading-none text-[var(--secondary-label)] line-through ${className}`}>
+      ${orig.toLocaleString()}
+    </span>
+  );
+}
 
 function itemRemaining(item: Item): number | null {
   const cap = Number(item.cap_qty ?? 0);
@@ -479,10 +497,21 @@ export default function CampaignDetailClient({ salesChannel }: { salesChannel?: 
                   剩 <Countdown target={displayEndAt} compact className="text-white" />
                 </div>
               )}
+              {/* key：換商品／換影片時整個重來（小視窗回到起始位置、重新出現） */}
+              <VideoIntro
+                key={`${id}-${campaign?.intro_video_url ?? ""}`}
+                url={campaign?.intro_video_url ?? null}
+                campaignId={id}
+              />
             </div>
 
             {/* 標題 + 描述 */}
             <div className="space-y-2 px-4">
+              {!readOnly && (campaign?.promo_label ?? hint?.promo_label) && (
+                <span className="inline-flex rounded-full bg-gradient-to-r from-[#ff3b30] to-[#ff7a00] px-3 py-1 text-[14px] font-bold text-white shadow-sm">
+                  {campaign?.promo_label ?? hint?.promo_label}
+                </span>
+              )}
               <div className="flex items-start justify-between gap-3">
                 <h1 className="flex-1 text-[26px] font-bold leading-tight text-[var(--foreground)]">
                   {cleanCampaignText(displayName)}
@@ -569,6 +598,7 @@ export default function CampaignDetailClient({ salesChannel }: { salesChannel?: 
                             <div className="text-[18px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
                               ${Number(it.unit_price).toLocaleString()}
                             </div>
+                            <OriginalPrice item={it} />
                             {it.ordered_qty > 0 && (
                               <div className="inline-flex items-baseline gap-1 text-[12px] font-medium text-[var(--secondary-label)]">
                                 已售出
@@ -981,8 +1011,11 @@ function ColorSizePicker({
         <div className="flex items-center justify-between gap-3 rounded-2xl bg-zinc-50 p-3">
           <div className="min-w-0">
             <div className="text-[15px] font-semibold text-[var(--foreground)]">{selected.color} {selected.size}</div>
-            <div className="mt-1 text-[20px] font-bold text-[var(--brand-strong)]">
-              ${Number(selected.unit_price).toLocaleString()}
+            <div className="mt-1 flex items-baseline gap-2">
+              <span className="text-[20px] font-bold text-[var(--brand-strong)]">
+                ${Number(selected.unit_price).toLocaleString()}
+              </span>
+              <OriginalPrice item={selected} className="text-[14px]" />
             </div>
             {selectedRemaining !== null && (
               <div className={`mt-1 text-[12px] font-semibold ${selectedRemaining > 0 ? "text-[#c4271d]" : "text-zinc-500"}`}>
@@ -1104,6 +1137,7 @@ function BuySheet({
                         <div className="text-[18px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
                           ${Number(it.unit_price).toLocaleString()}
                         </div>
+                        <OriginalPrice item={it} />
                         {it.ordered_qty > 0 && (
                           <div className="inline-flex items-baseline gap-1 text-[12px] font-medium text-[var(--secondary-label)]">
                             已售出

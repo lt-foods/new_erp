@@ -1214,6 +1214,70 @@ LINE 會**依網址快取預覽**，改完 og tag 後舊訊息裡的卡片不會
 curl -sS <url> | grep -o '<meta property="og[^>]*>'
 ```
 
+### 商城的原價劃線／優惠標籤／影片介紹（20261122000000）
+
+三欄各在不同地方：`skus.original_price`（商品頁每個規格填）、`group_buy_campaigns.promo_label`
+（編輯開團，≤ 6 字）、`products.intro_video_url`（商品頁貼連結）。線上零售價＝團購價，
+所以「原價」不能用零售價代替，一定是另外填的那一欄。
+
+- **原價要比該團單價高才顯示**，判準只有一處：liff-api 的 `effectiveOriginalPrice`
+  （列表卡片與商品頁共用）。不要在前端另外寫一份，會出現卡片有劃、點進去沒劃。
+- **這三欄的讀寫都不併進既有的查詢／RPC**：liff-api 與後台都是「另外一句、失敗就當沒有」，
+  寫入走 `rpc_set_sku_original_price` / `rpc_set_campaign_promo_label` / `rpc_set_product_intro_video`。
+  併進 `listActiveCampaigns` 的主查詢，SQL 沒套時整個商城列表會 500；
+  併進 `rpc_upsert_*` 等於重寫那幾支整欄覆寫的 RPC（見「開團」那一節）。
+- **影片是蝦皮那種浮動小視窗**（`apps/member/src/components/VideoIntro.tsx`；老闆 11/22：
+  「不要影片介紹這樣而已，要有一個小視窗影片，還要可以移動」）：進商品頁就浮在右下角靜音自動播，
+  可拖動（放開貼邊）、✕ 關掉、點一下開有聲音的大視窗。**不要改回只有一顆按鈕**——
+  按鈕只在小視窗被關掉之後、或連結嵌不了的時候出現。
+  小視窗裡的 iframe 上面一定要蓋一層透明板子接手指：iframe 會把拖動吃掉。
+- **影片只嵌四個網站**（IG / TikTok / YouTube / Facebook），iframe 的 src 一律由
+  `videoEmbed.ts` 的 `parseVideoEmbed` 組出來（`embedUrl` 大視窗、`previewUrl` 小視窗靜音版），
+  **不可以把資料庫裡的網址直接塞進 iframe**。直接指向影片檔的連結（.mp4 / .mov / .webm）走 `<video>`。
+  認不得的連結（抖音、其他網站）沒有小視窗，只有按鈕，點了開那個連結。
+- 小視窗能不能真的自動播，看對方播放器：影片檔與 YouTube 可以；TikTok 的靜音要靠 postMessage、
+  Facebook 靠外掛參數（都只在真手機上驗得出來）；**Instagram 不支援**，小視窗裡只會是靜止的貼文預覽。
+  要蝦皮那種效果最穩的是影片檔。
+- **最穩的來源是 LINE 記事本自己的影片**（20261122000010）。貼文的 `contents.media` 裡
+  `{ type:"VIDEO", serviceName:"opennote", obsNamespace:"post", objectId, width, height }`，
+  檔案在 `https://obs.line-scdn.net/r/<serviceName>/<obsNamespace>/<objectId>`：不用登入、`video/mp4`、
+  支援 Range、CORS `*`（2026-11-22 松山店實測，一支 ~14MB）。注意 `serviceName` 是 **opennote**，
+  跟廠商群組圖片的 `privnote` 不一樣 —— 一律照 media 自己給的拼，不要寫死。
+  - `line_note_videos` 只記「哪個社群哪一篇有哪支影片」，**不存檔案**（存進自己的空間，每位進商品頁的
+    客人都耗我們的流量）。worker 在 `jobRead` 列記事本時順手記（`recordNoteVideos`，不多打 LINE）；
+    後台商品頁「從 LINE 記事本挑影片 → 去 LINE 再讀一次」打 `sync_note_videos`（每個社群一次 list）。
+  - 影片貼文常常**沒有文字**，所以不做自動對商品，由人在商品頁挑（`NoteVideoPicker`）。
+    挑了存進 `products.intro_video_url` 的就是那個 CDN 網址（橫式加 `#landscape`），跟清單表沒有外鍵。
+  - 那篇貼文在 LINE 上被刪掉的話，檔案多半也會跟著消失；商品頁的小視窗就播不出來，要重新挑。
+
+### 要看 LINE 回了什麼：從資料庫用排程的那把鑰匙打 worker，鑰匙不用拿出來
+
+`line-note-worker` 的 `note_media_probe`／`chat_probe`／`sync_note_videos` 這幾個唯讀動作收 cron secret。
+secret 在 vault 裡（`line_note_cron_secret`），直接在 SQL 裡組請求，回應去 `net._http_response` 拿：
+
+```sql
+SELECT net.http_post(
+  url     := (SELECT decrypted_secret FROM vault.decrypted_secrets WHERE name = 'line_note_worker_url'),
+  headers := jsonb_build_object('Content-Type','application/json','x-line-note-secret',
+             (SELECT decrypted_secret FROM vault.decrypted_secrets WHERE name = 'line_note_cron_secret')),
+  body    := '{"action":"note_media_probe","community_id":18,"hours":3}'::jsonb,
+  timeout_milliseconds := 90000) AS id;          -- 預設只等 5 秒，一定要自己給
+SELECT status_code, content FROM net._http_response WHERE id = <上面的 id>;   -- 幾秒後才有
+```
+
+- 後台用的動作（`caller === "admin"`）驗的是真的登入（`auth.getUser`），自己簽的 token 過不了，
+  所以要給機器自己驗證用的動作，記得讓它收 cron secret（比照 `chat_probe`）。
+- 回應裡的文字可能被切在表情符號中間（半個 surrogate），`jq` 會整包拒收；用 Python 的 `json` 解。
+- 沒有現成動作能「只看某個社群的貼文原樣」時，**不要拿 crawl 去跑自家社群**：它會把貼文灌進選品的
+  `line_note_market_posts`、抓圖進儲存空間、還會叫 market-ai。加一個唯讀動作再部署才是對的。
+- 部署 worker 前照樣先比對線上版與 main（`GET …/functions/<slug>/body`，`Accept: multipart/form-data`）。
+- `videoEmbed.ts` 在 `apps/member/src/lib/` 與 `apps/admin/src/lib/` 各一份、必須逐字相同
+  （兩個 app 沒有共用套件）。改完跑 `node --test apps/admin/src/lib/videoEmbed.test.mjs`，它會比對兩份。
+- TikTok App 複製的是短連結（`vt.tiktok.com/…`），裡面沒有影片代號、嵌不了。後台存檔前用
+  TikTok 的 oEmbed（有 CORS）換成 `https://www.tiktok.com/player/v1/<代號>` 再存。
+- IG / TikTok 的嵌入在部分手機會要求登入或只給預覽，所以播放視窗底下一定留「到 ○○ 開啟」。
+  影片一定要是公開的；這一段只能在真手機上驗（機房 IP 打 IG 的 embed 一律被導去登入頁）。
+
 ---
 
 ## 前端建置（apps/admin, apps/member）
