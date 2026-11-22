@@ -980,6 +980,76 @@ async function likeByCommunity(list: any[], until: number, cap: number) {
 
 // 讀一次 LINE 的貼文列表（read_days 內被動過的貼文）。認貼文（discoverPosts）用它，
 // 「這篇從上次抓完之後有沒有人再留言」（unchangedSince）也用它 —— 一趟列表、兩件事。
+// ── 記事本上的影片貼文（20261122000010） ────────────────────────────────────
+// 後台商品頁「從 LINE 記事本挑影片」的清單。貼文的 contents.media 裡 type=VIDEO 的那幾個：
+// { type:"VIDEO", serviceName:"opennote", obsNamespace:"post", objectId, width, height }，
+// 檔案在 https://obs.line-scdn.net/r/<serviceName>/<obsNamespace>/<objectId>（不用登入，2026-11-22 實測）。
+// 只記「哪一篇有哪支影片」，不下載檔案。同一支重複看到 → 只更新 last_seen_at 與文字。
+// 三段會被拼成網址，格式不對的直接丟掉（表上也有同樣的 CHECK）。
+function noteVideoRows(c: { id: number; tenant_id: string }, notes: any[]) {
+  const rows: Record<string, unknown>[] = [];
+  const now = new Date().toISOString();
+  for (const n of notes ?? []) {
+    if (!n?.postId) continue;
+    const media = Array.isArray(n.raw?.contents?.media) ? n.raw.contents.media : [];
+    for (const m of media) {
+      if (String(m?.type ?? "") !== "VIDEO" || !m?.objectId) continue;
+      const objectId = String(m.objectId);
+      const serviceName = String(m.serviceName || "opennote");
+      const obsNamespace = String(m.obsNamespace || "post");
+      if (!/^[A-Za-z0-9_-]{8,200}$/.test(objectId) || !/^[a-z0-9_]{1,40}$/.test(serviceName) || !/^[a-z0-9_]{1,40}$/.test(obsNamespace)) continue;
+      rows.push({
+        tenant_id: c.tenant_id, community_id: c.id, line_post_id: String(n.postId),
+        object_id: objectId, service_name: serviceName, obs_namespace: obsNamespace,
+        width: Number.isFinite(Number(m.width)) && Number(m.width) > 0 ? Math.round(Number(m.width)) : null,
+        height: Number.isFinite(Number(m.height)) && Number(m.height) > 0 ? Math.round(Number(m.height)) : null,
+        author_name: n.authorName ? String(n.authorName).slice(0, 80) : null,
+        // 依「字」切，不能用 slice 依 UTF-16 單位切：切在表情符號中間會留下半個，Postgres 不收
+        text: Array.from(String(n.text ?? "")).slice(0, 300).join("") || null,
+        posted_at: n.createdAt ?? null,
+        last_seen_at: now,
+      });
+    }
+  }
+  return rows;
+}
+async function recordNoteVideos(c: { id: number; tenant_id: string }, notes: any[]): Promise<number> {
+  // 同一批裡不能有重複的鍵（ON CONFLICT DO UPDATE 同一列被碰兩次整批會失敗）
+  const byKey = new Map<string, Record<string, unknown>>();
+  for (const r of noteVideoRows(c, notes)) byKey.set(`${r.line_post_id}|${r.object_id}`, r);
+  const rows = [...byKey.values()];
+  if (rows.length === 0) return 0;
+  await rest("line_note_videos?on_conflict=community_id,line_post_id,object_id", {
+    method: "POST", body: rows, prefer: "resolution=merge-duplicates,return=minimal",
+  });
+  return rows.length;
+}
+
+// 後台按「去 LINE 再讀一次」：每個有在讀留言的社群各列一次記事本（只列貼文，不讀留言、不發文），
+// 把最近 3 天的影片貼文記下來。剛貼的影片不用等下一輪讀留言就挑得到。
+// 一個社群一次 list.json（跟每天的廠商爬取同一個量級）；整趟最多跑 45 秒，沒跑完的下一輪讀留言會補上。
+async function syncNoteVideos(callerTenant: string | null, communityId: number | null) {
+  const filter = communityId ? `id=eq.${communityId}` : "listen_enabled=eq.true";
+  const communities = ((await rest(`line_note_communities?${filter}&share_from_community_id=is.null&select=id,tenant_id,home_id,home_name,account_id&order=id.asc`)) ?? [])
+    .filter((c: any) => !callerTenant || c.tenant_id === callerTenant);
+  const until = Date.now() + 45_000;
+  const since = new Date(Date.now() - 3 * 86400_000).toISOString();
+  let videos = 0, done = 0;
+  const errors: string[] = [];
+  for (const c of communities) {
+    if (Date.now() > until) break;
+    try {
+      const client = await clientFor(await loadAccount(c.account_id));
+      const notes = await listPosts(client, c.home_id, { limit: 80, since, verbose: VERBOSE });
+      videos += await recordNoteVideos(c, notes);
+      done++;
+    } catch (e) {
+      errors.push(`${c.home_name}：${String((e as any)?.message ?? e).slice(0, 160)}`);
+    }
+  }
+  return { ok: errors.length === 0 || done > 0, communities: communities.length, read: done, videos, errors };
+}
+
 async function listRecentNotes(client: any, community: any) {
   const since = new Date(Date.now() - community.read_days * 86400_000).toISOString();
   // limit 要蓋得住 read_days 內的貼文量：松山一天 ~28 篇、7 天近 200 篇，
@@ -1176,6 +1246,8 @@ async function jobRead(job: any, reactUntil = Date.now() + REACT_BUDGET_MS) {
       try {
         const notes = await listRecentNotes(client, c);
         for (const n of notes) if (n.postId) touched.set(String(n.postId), n);
+        // 順手記下影片貼文（同一份列表，不多打 LINE）。記不到不能影響下面認貼文／讀留言。
+        await recordNoteVideos(c, notes).catch((e) => log("記影片貼文失敗（略過）:", (e as any)?.message ?? e));
         discovered = await discoverPosts(client, c, notes);
       } catch (e) { log("認貼文失敗（略過）:", (e as any)?.message ?? e); }
       sinceFilter = `&posted_at=gte.${new Date(Date.now() - c.read_days * 86400_000).toISOString()}`;
@@ -1943,6 +2015,11 @@ Deno.serve(async (req) => {
         }
         return json({ ok: true, home: c.home_name, hours, listed: notes.length, posts, tries });
       } catch (e) { return json({ ok: false, error: String((e as any)?.message ?? e).slice(0, 800) }); }
+    }
+    // 後台商品頁「從 LINE 記事本挑影片」的「去 LINE 再讀一次」（cron secret 也能打，驗證用）
+    if (action === "sync_note_videos") {
+      if (caller === "admin" && !callerTenant) return json({ error: "這個帳號沒有所屬公司，不能讀取" }, 403);
+      return json(await syncNoteVideos(caller === "admin" ? callerTenant : null, body.community_id ? Number(body.community_id) : null));
     }
     if (action === "debug_chat_events") {
       if (caller !== "admin") return json({ error: "只能從後台按" }, 403);

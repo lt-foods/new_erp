@@ -1,4 +1,4 @@
-// 商品介紹影片：把後台貼的連結（IG Reel / TikTok / YouTube / Facebook / 影片檔）換成可以在頁面裡播的網址。
+// 商品介紹影片：把後台填的連結（LINE 記事本影片 / IG Reel / TikTok / YouTube / Facebook / 影片檔）換成可以在頁面裡播的網址。
 //
 // ⚠ 這個檔有兩份，內容必須一模一樣：
 //     apps/member/src/lib/videoEmbed.ts   會員商品頁用來播
@@ -11,7 +11,7 @@
 // 不進 iframe（<video> 不會執行對方的程式）。認不得的連結回 null，
 // 畫面改成「到原網站開啟」的一般連結（一樣只收 https）。
 
-export type VideoProvider = "youtube" | "instagram" | "tiktok" | "facebook" | "file";
+export type VideoProvider = "youtube" | "instagram" | "tiktok" | "facebook" | "line" | "file";
 
 export type VideoEmbed = {
   provider: VideoProvider;
@@ -35,6 +35,7 @@ const PROVIDER_LABEL: Record<VideoProvider, string> = {
   instagram: "Instagram",
   tiktok: "TikTok",
   facebook: "Facebook",
+  line: "LINE 記事本",
   file: "影片",
 };
 
@@ -76,6 +77,16 @@ export function tiktokPlayerUrl(videoId: string): string | null {
   return /^\d{8,25}$/.test(videoId) ? `https://www.tiktok.com/player/v1/${videoId}` : null;
 }
 
+/** LINE 記事本影片貼文 → 存進資料庫的網址（後台「從 LINE 記事本挑影片」用）。格式不對回 null。 */
+export function lineNoteVideoUrl(v: {
+  service_name: string; obs_namespace: string; object_id: string; width?: number | null; height?: number | null;
+}): string | null {
+  if (!/^[a-z0-9_]{1,40}$/.test(v.service_name) || !/^[a-z0-9_]{1,40}$/.test(v.obs_namespace)
+    || !/^[A-Za-z0-9_-]{8,200}$/.test(v.object_id)) return null;
+  const landscape = Number(v.width ?? 0) > Number(v.height ?? 0);
+  return `https://obs.line-scdn.net/r/${v.service_name}/${v.obs_namespace}/${v.object_id}${landscape ? "#landscape" : ""}`;
+}
+
 export function parseVideoEmbed(raw: string | null | undefined): VideoEmbed | null {
   const safe = safeHttpsUrl(raw);
   if (!safe) return null;
@@ -83,7 +94,7 @@ export function parseVideoEmbed(raw: string | null | undefined): VideoEmbed | nu
   const host = hostOf(u);
   const seg = u.pathname.split("/").filter(Boolean);
   const make = (provider: VideoProvider, embedUrl: string, previewUrl: string, portrait: boolean): VideoEmbed =>
-    ({ provider, label: PROVIDER_LABEL[provider], kind: provider === "file" ? "file" : "iframe", embedUrl, previewUrl, portrait });
+    ({ provider, label: PROVIDER_LABEL[provider], kind: provider === "file" || provider === "line" ? "file" : "iframe", embedUrl, previewUrl, portrait });
 
   // ── YouTube ────────────────────────────────────────────────────────────
   if (host === "youtu.be" || host === "youtube.com" || host === "youtube-nocookie.com") {
@@ -141,6 +152,16 @@ export function parseVideoEmbed(raw: string | null | undefined): VideoEmbed | nu
     const portrait = seg.includes("reel") || (seg[0] === "share" && seg[1] === "r");
     const fbUrl = `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(safe)}&show_text=false&autoplay=true`;
     return make("facebook", fbUrl, `${fbUrl}&mute=1`, portrait);
+  }
+
+  // ── LINE 記事本的影片：檔案在 LINE 的 CDN 上，不用登入、就是一支 mp4（2026-11-22 實測），用 <video> 播 ──
+  // 路徑固定是 /r/<服務>/<空間>/<物件代號>；橫式影片由後台在網址後面加 #landscape 標出來。
+  if (host === "obs.line-scdn.net") {
+    const ok = seg.length === 4 && seg[0] === "r"
+      && /^[a-z0-9_]{1,40}$/.test(seg[1]) && /^[a-z0-9_]{1,40}$/.test(seg[2]) && /^[A-Za-z0-9_-]{8,200}$/.test(seg[3]);
+    if (!ok) return null;
+    const fileUrl = `https://obs.line-scdn.net/r/${seg[1]}/${seg[2]}/${seg[3]}`;
+    return make("line", fileUrl, fileUrl, u.hash !== "#landscape");
   }
 
   // ── 直接指向影片檔的連結（.mp4 / .mov / .webm）：用 <video> 播，小視窗可以真的靜音自動播放 ──

@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { isTikTokShortLink, parseVideoEmbed, safeHttpsUrl, tiktokPlayerUrl } from "./videoEmbed.ts";
+import { isTikTokShortLink, lineNoteVideoUrl, parseVideoEmbed, safeHttpsUrl, tiktokPlayerUrl } from "./videoEmbed.ts";
 
 test("後台與會員端的 videoEmbed.ts 必須逐字相同", () => {
   const admin = readFileSync(fileURLToPath(new URL("./videoEmbed.ts", import.meta.url)), "utf8");
@@ -74,6 +74,28 @@ test("影片檔連結（.mp4 / .mov / .webm）→ 用 <video> 播，不進 ifram
   assert.equal(parseVideoEmbed("https://cdn.example.com/videos/bagel.mov")?.kind, "file");
   assert.equal(parseVideoEmbed("http://cdn.example.com/videos/bagel.mp4"), null);
   assert.equal(parseVideoEmbed("https://cdn.example.com/page.html?file=x.mp4"), null);
+});
+
+test("LINE 記事本影片：CDN 網址用 <video> 播；橫式靠 #landscape；路徑格式不對不收", () => {
+  const oid = "cj0zOTQxa3VjN2dxdGw2JnM9anA4JnQ9ZCZ1PTFtbWt0YzUxMDQzZzAmaT0xcw";
+  const url = lineNoteVideoUrl({ service_name: "opennote", obs_namespace: "post", object_id: oid, width: 281, height: 500 });
+  assert.equal(url, `https://obs.line-scdn.net/r/opennote/post/${oid}`);
+  const e = parseVideoEmbed(url);
+  assert.equal(e?.provider, "line");
+  assert.equal(e?.kind, "file");
+  assert.equal(e?.portrait, true);
+  assert.equal(e?.embedUrl, url);
+  assert.equal(e?.previewUrl, url);
+  const wide = lineNoteVideoUrl({ service_name: "opennote", obs_namespace: "post", object_id: oid, width: 1280, height: 720 });
+  assert.equal(wide, `https://obs.line-scdn.net/r/opennote/post/${oid}#landscape`);
+  assert.equal(parseVideoEmbed(wide)?.portrait, false);
+  assert.equal(parseVideoEmbed(wide)?.embedUrl, `https://obs.line-scdn.net/r/opennote/post/${oid}`);
+  // 格式不對：不拼網址、不播
+  assert.equal(lineNoteVideoUrl({ service_name: "open/note", obs_namespace: "post", object_id: oid }), null);
+  assert.equal(lineNoteVideoUrl({ service_name: "opennote", obs_namespace: "post", object_id: "../../x" }), null);
+  assert.equal(parseVideoEmbed(`https://obs.line-scdn.net/r/opennote/post/${oid}/extra`), null);
+  assert.equal(parseVideoEmbed("https://obs.line-scdn.net/somewhere/else"), null);
+  assert.equal(parseVideoEmbed(`https://obs.line-scdn.net.evil.example/r/opennote/post/${oid}`), null);
 });
 
 test("不是 https、不認得的網站、亂填 → null，不會變成 iframe", () => {

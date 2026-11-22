@@ -9,6 +9,7 @@ import { SupplierCombobox } from "@/components/SupplierCombobox";
 import { RichTextEditor } from "@/components/RichTextEditor";
 import SpinButton from "@/components/SpinButton";
 import { resolveTikTokShortLink, videoLinkStatus } from "@/lib/videoLink";
+import { NoteVideoPicker } from "@/components/NoteVideoPicker";
 
 type Status = "draft" | "active" | "inactive" | "discontinued";
 type StorageType = "room_temp" | "refrigerated" | "frozen" | "meal_train";
@@ -396,10 +397,11 @@ export function ProductForm({
           value={videoUrl}
           onChange={(e) => { setVideoUrl(e.target.value); setVideoNote(null); }}
           onBlur={() => { void normalizeVideoUrl(videoUrl); }}
-          placeholder="貼上 IG Reel / TikTok / YouTube / Facebook 影片的連結"
+          placeholder="從下方挑 LINE 記事本的影片，或貼上 YouTube / TikTok / IG Reel / Facebook 影片的連結"
           className={inputClass}
         />
         <VideoLinkHint url={videoUrl} resolving={videoResolving} note={videoNote} />
+        <NoteVideoPicker current={videoUrl} onPick={(url) => { setVideoUrl(url); setVideoNote(null); }} />
       </Field>
 
       <details
@@ -518,7 +520,8 @@ function VideoLinkHint({ url, resolving, note }: { url: string; resolving: boole
     return (
       <>
         <span className={`${cls} text-emerald-700 dark:text-emerald-400`}>
-          ✓ {st.label === "影片" ? "影片檔" : `${st.label} 影片`}，會員商品頁會出現浮動小視窗。
+          ✓ {st.label === "影片" ? "影片檔" : `${st.label} 影片`}，會員商品頁會出現浮動小視窗
+          {st.label === "LINE 記事本" || st.label === "影片" || st.label === "YouTube" ? "，而且會自動播放（靜音）。" : "。"}
         </span>
         {st.label === "Instagram" && (
           <span className={`${cls} text-amber-700 dark:text-amber-400`}>
