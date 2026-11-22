@@ -1890,6 +1890,60 @@ Deno.serve(async (req) => {
         });
       } catch (e) { return json({ ok: false, error: String((e as any)?.message ?? e).slice(0, 800) }); }
     }
+    if (action === "note_media_probe") {
+      // 唯讀：看某個社群記事本最近的貼文帶了什麼附件（影片長什麼樣、抓不抓得到），cron secret 也能打。
+      // 只打一次 list.json（跟每天的爬取同一個量級），不讀留言、不發文、不寫任何資料表。
+      // 2026-11-22：商品頁的影片小視窗想直接用包子媽貼在記事本的影片，但讀過的 5,412 個附件全是照片，
+      // 不知道 LINE 怎麼回影片 —— 先看清楚再決定怎麼接。
+      const cRows = await rest(`line_note_communities?id=eq.${Number(body.community_id)}&select=id,home_id,home_name,account_id`);
+      const c = cRows?.[0];
+      if (!c) return json({ error: "找不到這個社群" }, 404);
+      const client = await clientFor(await loadAccount(Number(body.account_id ?? c.account_id)));
+      const hours = Math.min(Math.max(Number(body.hours ?? 6), 1), 72);
+      try {
+        const notes = await listPosts(client, c.home_id, {
+          limit: Math.min(Math.max(Number(body.limit ?? 30), 1), 60),
+          since: new Date(Date.now() - hours * 3600_000).toISOString(),
+        });
+        const wantId = body.post_id ? String(body.post_id) : null;
+        const posts = notes.map((n: any) => {
+          const media = Array.isArray(n.raw?.contents?.media) ? n.raw.contents.media : [];
+          const types = media.map((m: any) => String(m?.type ?? "?"));
+          const interesting = (wantId && String(n.postId) === wantId) || types.some((t: string) => t !== "PHOTO")
+            || /VIDEO|video/.test(JSON.stringify(n.raw?.contents ?? {}).slice(0, 20000));
+          return {
+            postId: String(n.postId), at: n.createdAt, author: n.authorName, text: String(n.text ?? "").slice(0, 60), types,
+            // 有影片（或指定要看）的那幾篇把 contents 整包吐出來：欄位名稱不固定，下載要用的可能藏在別的欄位
+            ...(interesting ? { contents: JSON.stringify(n.raw?.contents ?? {}).slice(0, 6000) } : {}),
+          };
+        });
+        // 試抓：只准打 LINE 自己放檔案的兩個主機，而且只要前幾個位元組（Range），不下載整支影片
+        const tries: unknown[] = [];
+        for (const raw of (Array.isArray(body.try_urls) ? body.try_urls : []).slice(0, 12)) {
+          let u: URL;
+          try { u = new URL(String(raw)); } catch { tries.push({ url: String(raw).slice(0, 80), error: "不是網址" }); continue; }
+          const host = u.hostname.toLowerCase();
+          if (u.protocol !== "https:" || !["obs.line-scdn.net", "obs.line-apps.com"].includes(host)) {
+            tries.push({ url: u.toString().slice(0, 120), error: "只准試 obs.line-scdn.net / obs.line-apps.com" });
+            continue;
+          }
+          try {
+            const auth = host === "obs.line-apps.com";
+            const headers = { ...(auth ? client.base.request.getHeader("GET") : {}), Range: "bytes=0-255" };
+            const res = auth ? await client.base.fetch(u.toString(), { method: "GET", headers }) : await fetch(u.toString(), { headers });
+            const head = new Uint8Array(await res.arrayBuffer()).slice(0, 16);
+            tries.push({
+              url: u.toString(), auth, status: res.status,
+              type: res.headers.get("content-type"), length: res.headers.get("content-length"),
+              range: res.headers.get("content-range"), accept_ranges: res.headers.get("accept-ranges"),
+              cache: res.headers.get("cache-control"), acao: res.headers.get("access-control-allow-origin"),
+              head_hex: [...head].map((b) => b.toString(16).padStart(2, "0")).join(""),
+            });
+          } catch (e) { tries.push({ url: u.toString(), error: String((e as any)?.message ?? e).slice(0, 200) }); }
+        }
+        return json({ ok: true, home: c.home_name, hours, listed: notes.length, posts, tries });
+      } catch (e) { return json({ ok: false, error: String((e as any)?.message ?? e).slice(0, 800) }); }
+    }
     if (action === "debug_chat_events") {
       if (caller !== "admin") return json({ error: "只能從後台按" }, 403);
       const account = await loadAccount(Number(body.account_id ?? 3));
