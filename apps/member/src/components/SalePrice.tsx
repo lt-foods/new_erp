@@ -64,7 +64,7 @@ function Spark({ size }: { size: number }) {
 
 function Original({ value, className }: { value: number; className: string }) {
   return (
-    <span className={`relative inline-block font-extrabold italic tabular-nums leading-none text-[#7a7a7a] ${className}`}>
+    <span className={`relative inline-block whitespace-nowrap font-extrabold italic tabular-nums leading-none text-[#7a7a7a] ${className}`}>
       ${value.toLocaleString()}
       {/* 紅色斜線：比數字寬一點、往右上斜 */}
       <span
@@ -98,7 +98,7 @@ export default function SalePrice({
   const now = (
     <span className={`relative inline-block ${s.pad}`}>
       <Brush />
-      <span className={`relative font-black tabular-nums leading-none text-[#d5121e] ${s.price}`} style={{ letterSpacing: "-0.02em" }}>
+      <span className={`relative whitespace-nowrap font-black tabular-nums leading-none text-[#d5121e] ${s.price}`} style={{ letterSpacing: "-0.02em" }}>
         ${price.toLocaleString()}
         {suffix ? <span className={`ml-0.5 font-extrabold ${s.suffix}`}>{suffix}</span> : null}
       </span>
