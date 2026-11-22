@@ -507,7 +507,7 @@ function VideoLinkHint({ url, resolving, note }: { url: string; resolving: boole
   if (st.kind === "empty") {
     return (
       <span className={`${cls} text-zinc-500`}>
-        有填的話，會員商品頁的圖片右下角會出現「▶ 影片介紹」，客人點了直接在頁面裡播。影片要設成公開。
+        有填的話，會員商品頁會出現一個浮動的小視窗自動播放這支影片（客人可以拖動、可以關掉），點一下放大看有聲音的完整版。影片要設成公開。
       </span>
     );
   }
@@ -517,7 +517,14 @@ function VideoLinkHint({ url, resolving, note }: { url: string; resolving: boole
   if (st.kind === "embed") {
     return (
       <>
-        <span className={`${cls} text-emerald-700 dark:text-emerald-400`}>✓ {st.label} 影片，會員商品頁可以直接播放。</span>
+        <span className={`${cls} text-emerald-700 dark:text-emerald-400`}>
+          ✓ {st.label === "影片" ? "影片檔" : `${st.label} 影片`}，會員商品頁會出現浮動小視窗。
+        </span>
+        {st.label === "Instagram" && (
+          <span className={`${cls} text-amber-700 dark:text-amber-400`}>
+            Instagram 不讓影片在小視窗裡自動播放，客人看到的會是一張靜止的預覽、點了才播。要自動播請改貼 YouTube、TikTok 或影片檔的連結。
+          </span>
+        )}
         {noteLine}
       </>
     );
@@ -527,7 +534,7 @@ function VideoLinkHint({ url, resolving, note }: { url: string; resolving: boole
   }
   return (
     <span className={`${cls} text-amber-700 dark:text-amber-400`}>
-      這種連結沒辦法嵌在頁面裡播，客人點「影片介紹」會跳去開這個連結。要直接播請貼 IG Reel、TikTok、YouTube 或 Facebook 影片的連結。
+      這種連結沒辦法嵌在頁面裡播：不會有浮動小視窗，只有一顆「影片介紹」按鈕，客人點了會跳去開這個連結。要小視窗請貼 YouTube、TikTok、IG Reel、Facebook 影片或影片檔（.mp4）的連結。
     </span>
   );
 }

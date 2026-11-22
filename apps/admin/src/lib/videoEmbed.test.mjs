@@ -52,6 +52,30 @@ test("Facebook：reel / videos / fb.watch 走官方外掛", () => {
   assert.equal(parseVideoEmbed("https://www.facebook.com/baozima"), null);
 });
 
+test("小視窗預覽網址：靜音自動播放；IG 不支援 → 跟大視窗同一個網址", () => {
+  const yt = parseVideoEmbed("https://www.youtube.com/shorts/abcDEF12345");
+  assert.equal(yt?.kind, "iframe");
+  assert.equal(yt?.previewUrl,
+    "https://www.youtube.com/embed/abcDEF12345?playsinline=1&rel=0&autoplay=1&mute=1&controls=0&loop=1&playlist=abcDEF12345");
+  const tk = parseVideoEmbed("https://www.tiktok.com/player/v1/6718335390845095173");
+  assert.ok(tk?.previewUrl.startsWith("https://www.tiktok.com/player/v1/6718335390845095173?autoplay=1&loop=1"));
+  assert.ok(tk?.previewUrl.includes("controls=0"));
+  const ig = parseVideoEmbed("https://www.instagram.com/reel/C8abcdEFGhi/");
+  assert.equal(ig?.previewUrl, ig?.embedUrl);
+  assert.ok(parseVideoEmbed("https://www.facebook.com/reel/1234567890")?.previewUrl.endsWith("&mute=1"));
+});
+
+test("影片檔連結（.mp4 / .mov / .webm）→ 用 <video> 播，不進 iframe", () => {
+  const f = parseVideoEmbed("https://cdn.example.com/videos/bagel.MP4?token=abc");
+  assert.equal(f?.provider, "file");
+  assert.equal(f?.kind, "file");
+  assert.equal(f?.embedUrl, "https://cdn.example.com/videos/bagel.MP4?token=abc");
+  assert.equal(f?.previewUrl, f?.embedUrl);
+  assert.equal(parseVideoEmbed("https://cdn.example.com/videos/bagel.mov")?.kind, "file");
+  assert.equal(parseVideoEmbed("http://cdn.example.com/videos/bagel.mp4"), null);
+  assert.equal(parseVideoEmbed("https://cdn.example.com/page.html?file=x.mp4"), null);
+});
+
 test("不是 https、不認得的網站、亂填 → null，不會變成 iframe", () => {
   assert.equal(parseVideoEmbed("http://www.youtube.com/watch?v=dQw4w9WgXcQ"), null);
   assert.equal(parseVideoEmbed("javascript:alert(1)"), null);

@@ -1226,9 +1226,18 @@ curl -sS <url> | grep -o '<meta property="og[^>]*>'
   寫入走 `rpc_set_sku_original_price` / `rpc_set_campaign_promo_label` / `rpc_set_product_intro_video`。
   併進 `listActiveCampaigns` 的主查詢，SQL 沒套時整個商城列表會 500；
   併進 `rpc_upsert_*` 等於重寫那幾支整欄覆寫的 RPC（見「開團」那一節）。
+- **影片是蝦皮那種浮動小視窗**（`apps/member/src/components/VideoIntro.tsx`；老闆 11/22：
+  「不要影片介紹這樣而已，要有一個小視窗影片，還要可以移動」）：進商品頁就浮在右下角靜音自動播，
+  可拖動（放開貼邊）、✕ 關掉、點一下開有聲音的大視窗。**不要改回只有一顆按鈕**——
+  按鈕只在小視窗被關掉之後、或連結嵌不了的時候出現。
+  小視窗裡的 iframe 上面一定要蓋一層透明板子接手指：iframe 會把拖動吃掉。
 - **影片只嵌四個網站**（IG / TikTok / YouTube / Facebook），iframe 的 src 一律由
-  `videoEmbed.ts` 的 `parseVideoEmbed` 組出來，**不可以把資料庫裡的網址直接塞進 iframe**。
-  認不得的連結（抖音、其他網站）小框照樣出現，點了改成開那個連結。
+  `videoEmbed.ts` 的 `parseVideoEmbed` 組出來（`embedUrl` 大視窗、`previewUrl` 小視窗靜音版），
+  **不可以把資料庫裡的網址直接塞進 iframe**。直接指向影片檔的連結（.mp4 / .mov / .webm）走 `<video>`。
+  認不得的連結（抖音、其他網站）沒有小視窗，只有按鈕，點了開那個連結。
+- 小視窗能不能真的自動播，看對方播放器：影片檔與 YouTube 可以；TikTok 的靜音要靠 postMessage、
+  Facebook 靠外掛參數（都只在真手機上驗得出來）；**Instagram 不支援**，小視窗裡只會是靜止的貼文預覽。
+  要蝦皮那種效果最穩的是影片檔。
 - `videoEmbed.ts` 在 `apps/member/src/lib/` 與 `apps/admin/src/lib/` 各一份、必須逐字相同
   （兩個 app 沒有共用套件）。改完跑 `node --test apps/admin/src/lib/videoEmbed.test.mjs`，它會比對兩份。
 - TikTok App 複製的是短連結（`vt.tiktok.com/…`），裡面沒有影片代號、嵌不了。後台存檔前用

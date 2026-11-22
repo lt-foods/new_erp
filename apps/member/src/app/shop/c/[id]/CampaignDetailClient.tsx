@@ -20,7 +20,7 @@ import { logCaught } from "@/lib/clientLog";
 import { detectClientChannel } from "@/lib/clientChannel";
 import { backOrPush } from "@/lib/navBack";
 import LineBindGate from "@/components/LineBindGate";
-import { parseVideoEmbed, safeHttpsUrl } from "@/lib/videoEmbed";
+import VideoIntro from "@/components/VideoIntro";
 import SalePriceTag from "@/components/SalePriceTag";
 
 /**
@@ -500,7 +500,12 @@ export default function CampaignDetailClient({ salesChannel }: { salesChannel?: 
                   剩 <Countdown target={displayEndAt} compact className="text-white" />
                 </div>
               )}
-              <VideoIntroButton url={campaign?.intro_video_url ?? null} campaignId={id} />
+              {/* key：換商品／換影片時整個重來（小視窗回到起始位置、重新出現） */}
+              <VideoIntro
+                key={`${id}-${campaign?.intro_video_url ?? ""}`}
+                url={campaign?.intro_video_url ?? null}
+                campaignId={id}
+              />
             </div>
 
             {/* 標題 + 描述 */}
@@ -852,98 +857,6 @@ function HeroCarousel({ images }: { images: string[] }) {
               className="max-h-[90vh] max-w-[94vw] object-contain"
             />
           )}
-        </div>
-      </Portal>
-    </>
-  );
-}
-
-/**
- * 圖片右下角的「影片介紹」小框 + 點開後的播放視窗。
- *
- * - 點了才載入影片（iframe 只在視窗開著時存在）：不點不耗流量，關掉就停止播放。
- * - 只嵌 parseVideoEmbed 認得的四個網站；認不得的連結（例如 TikTok 短連結、抖音）
- *   小框照樣出現，點了改成直接開那個連結。
- * - IG / TikTok 的嵌入在某些手機上會要求登入或只給預覽圖，所以視窗下面一定留一顆
- *   「到 ○○ 開啟」—— 嵌入不給播的時候客人還有路走。
- */
-function VideoIntroButton({ url, campaignId }: { url: string | null; campaignId: number }) {
-  const [open, setOpen] = useState(false);
-  const link = safeHttpsUrl(url);
-  const embed = useMemo(() => parseVideoEmbed(link), [link]);
-
-  // 視窗開著時鎖住背景捲動
-  useEffect(() => {
-    if (!open) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => { document.body.style.overflow = prev; };
-  }, [open]);
-
-  if (!link) return null;
-
-  const pill = "absolute bottom-3 right-3 z-10 flex items-center gap-1.5 rounded-2xl bg-black/70 py-1.5 pl-1.5 pr-3 text-[14px] font-semibold text-white shadow-lg backdrop-blur active:scale-95";
-  const icon = (
-    <span className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-[#ff3b30] to-[#ff7a00]" aria-hidden>
-      <svg viewBox="0 0 24 24" fill="currentColor" className="ml-0.5 h-4 w-4"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5Z" /></svg>
-    </span>
-  );
-
-  if (!embed) {
-    return (
-      <a href={link} target="_blank" rel="noopener noreferrer" className={pill}>
-        {icon}
-        影片介紹
-      </a>
-    );
-  }
-
-  return (
-    <>
-      <button type="button" onClick={() => setOpen(true)} className={pill} aria-label="看影片介紹">
-        {icon}
-        影片介紹
-      </button>
-      <Portal enabled={open}>
-        <div
-          className="fixed inset-0 z-[70] flex flex-col items-center justify-center gap-3 bg-black/90 px-4"
-          onClick={() => setOpen(false)}
-        >
-          <button
-            type="button"
-            aria-label="關閉"
-            onClick={() => setOpen(false)}
-            className="absolute right-4 flex h-9 w-9 items-center justify-center rounded-full bg-white/15 text-[20px] text-white backdrop-blur"
-            style={{ top: "calc(env(safe-area-inset-top) + 12px)" }}
-          >
-            ✕
-          </button>
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="overflow-hidden rounded-2xl bg-black shadow-2xl"
-            style={embed.portrait
-              ? { height: "min(74vh, 640px)", aspectRatio: "9 / 16", maxWidth: "92vw" }
-              : { width: "min(92vw, 720px)", aspectRatio: "16 / 9" }}
-          >
-            <iframe
-              key={`${campaignId}-${embed.embedUrl}`}
-              src={embed.embedUrl}
-              title="影片介紹"
-              className="h-full w-full border-0"
-              allow="autoplay; encrypted-media; fullscreen; picture-in-picture; web-share"
-              allowFullScreen
-              referrerPolicy="strict-origin-when-cross-origin"
-            />
-          </div>
-          <a
-            href={link}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => e.stopPropagation()}
-            className="rounded-full bg-white/15 px-4 py-2 text-[14px] font-medium text-white backdrop-blur active:opacity-70"
-          >
-            播不出來？到 {embed.label} 開啟
-          </a>
         </div>
       </Portal>
     </>
