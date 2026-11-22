@@ -31,6 +31,10 @@ export type CampaignSummary = {
   item_count: number;
   min_price: number;
   max_price: number;
+  /** 卡片那個最低價的原價（比售價高才有值）；有值就在售價旁畫刪除線。後端未部署前沒有這個欄位。 */
+  min_price_original?: number | null;
+  /** 優惠標籤（後台每團自己打，例：獨家優惠）；沒有就不顯示。 */
+  promo_label?: string | null;
 };
 
 /** 這團是不是門市自己開的（只有該店會員看得到，貨由門市自己備）。 */
@@ -51,6 +55,27 @@ export function campaignBadgeLabel(c: CampaignSummary): string | null {
   if (c.close_type === "fast") return "限時";
   if (c.close_type === "limited" || hasCap) return "限時限量";
   return null;
+}
+
+/** 要畫刪除線的原價；沒有、或不比售價高就回 null。 */
+export function campaignOriginalPrice(c: CampaignSummary): number | null {
+  const orig = Number(c.min_price_original ?? 0);
+  return c.min_price > 0 && orig > c.min_price ? orig : null;
+}
+
+/** 圖片右上角的優惠標籤（「獨家優惠」那種）。售完的團不貼：都買不到了還喊優惠只會惹人煩。 */
+function PromoLabel({ campaign, size }: { campaign: CampaignSummary; size: "sm" | "lg" }) {
+  const label = (campaign.promo_label ?? "").trim();
+  if (!label || campaignSoldOut(campaign)) return null;
+  return (
+    <span
+      className={`absolute z-[1] rounded-full bg-gradient-to-r from-[#ff3b30] to-[#ff7a00] font-bold text-white shadow-md ${
+        size === "lg" ? "right-3 top-3 px-3 py-1 text-[14px]" : "right-2 top-2 px-2 py-0.5 text-[11px]"
+      }`}
+    >
+      {label}
+    </span>
+  );
 }
 
 /** 限量類活動還剩幾份;沒設 cap 回 null */
@@ -113,6 +138,7 @@ export default function CampaignCard({
   const priceText = campaign.min_price > 0
     ? `$${campaign.min_price.toLocaleString()}${campaign.max_price > campaign.min_price ? " 起" : ""}`
     : "—";
+  const originalPrice = campaignOriginalPrice(campaign);
 
   if (variant === "hero") {
     return (
@@ -165,14 +191,22 @@ export default function CampaignCard({
               </div>
             );
           })()}
+          <PromoLabel campaign={campaign} size="lg" />
         </div>
         <div className="space-y-1.5 px-4 py-3.5">
           <h3 className="text-[22px] font-bold leading-tight text-[var(--foreground)]">
             {cleanCampaignText(campaign.name)}
           </h3>
           <div className="flex items-baseline justify-between gap-2">
-            <span className="brand-gradient-text text-[28px] font-extrabold tabular-nums leading-none">
-              {priceText}
+            <span className="flex items-baseline gap-2">
+              <span className="brand-gradient-text text-[28px] font-extrabold tabular-nums leading-none">
+                {priceText}
+              </span>
+              {originalPrice !== null && (
+                <span className="text-[15px] tabular-nums leading-none text-[var(--secondary-label)] line-through">
+                  ${originalPrice.toLocaleString()}
+                </span>
+              )}
             </span>
             <span className="text-[13px] text-[var(--secondary-label)]">
               共 {campaign.item_count} 項
@@ -234,6 +268,7 @@ export default function CampaignCard({
             </span>
           );
         })()}
+        <PromoLabel campaign={campaign} size="sm" />
       </div>
       <div className="space-y-1 px-3 py-2.5">
         <h3 className="line-clamp-2 min-h-[2.6em] text-[16px] font-semibold leading-tight text-[var(--foreground)]">
@@ -249,8 +284,16 @@ export default function CampaignCard({
           );
         })()}
         <div className="flex items-baseline justify-between gap-2">
-          <div className="brand-gradient-text text-[24px] font-extrabold tabular-nums leading-none">
-            {priceText}
+          {/* 原價疊在售價上面（不是旁邊）：兩欄格線很窄，旁邊還有已訂購／瀏覽數 */}
+          <div>
+            {originalPrice !== null && (
+              <div className="mb-1 text-[12px] tabular-nums leading-none text-[var(--secondary-label)] line-through">
+                ${originalPrice.toLocaleString()}
+              </div>
+            )}
+            <div className="brand-gradient-text text-[24px] font-extrabold tabular-nums leading-none">
+              {priceText}
+            </div>
           </div>
           {/* 已訂購 / 瀏覽數直向堆疊在價格右邊 —— 卡片是兩欄格線，
               跟倒數同一列會擠爆（倒數字串長達「14 天 23:19:10」）。 */}

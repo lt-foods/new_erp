@@ -20,6 +20,7 @@ import { logCaught } from "@/lib/clientLog";
 import { detectClientChannel } from "@/lib/clientChannel";
 import { backOrPush } from "@/lib/navBack";
 import LineBindGate from "@/components/LineBindGate";
+import { parseVideoEmbed, safeHttpsUrl } from "@/lib/videoEmbed";
 
 /**
  * liff-api 載入團購失敗時給客人看的文案。
@@ -89,6 +90,10 @@ type CampaignDetail = {
    * 舊版後端沒有這個欄位 → undefined，一律當可下單（那時候不可下單的團根本 404）。
    */
   available?: boolean;
+  /** 優惠標籤（後台每團自己打，例：獨家優惠）。後端未部署前沒有這個欄位。 */
+  promo_label?: string | null;
+  /** 商品介紹影片連結（IG / TikTok / YouTube / FB）；有值就在圖片右下角出「影片介紹」小框。 */
+  intro_video_url?: string | null;
 };
 
 type Item = {
@@ -99,9 +104,22 @@ type Item = {
   variant_name: string | null;
   image_url: string | null;
   unit_price: number;
+  /** 原價（後端只在它比 unit_price 高時回）；有值就在售價旁畫刪除線。 */
+  original_price?: number | null;
   cap_qty: number | null;
   ordered_qty: number;
 };
+
+/** 售價旁邊那個劃掉的原價。沒有原價就什麼都不畫。 */
+function OriginalPrice({ item, className = "text-[13px]" }: { item: Item; className?: string }) {
+  const orig = Number(item.original_price ?? 0);
+  if (!(orig > Number(item.unit_price))) return null;
+  return (
+    <span className={`tabular-nums leading-none text-[var(--secondary-label)] line-through ${className}`}>
+      ${orig.toLocaleString()}
+    </span>
+  );
+}
 
 function itemRemaining(item: Item): number | null {
   const cap = Number(item.cap_qty ?? 0);
@@ -479,10 +497,16 @@ export default function CampaignDetailClient({ salesChannel }: { salesChannel?: 
                   剩 <Countdown target={displayEndAt} compact className="text-white" />
                 </div>
               )}
+              <VideoIntroButton url={campaign?.intro_video_url ?? null} campaignId={id} />
             </div>
 
             {/* 標題 + 描述 */}
             <div className="space-y-2 px-4">
+              {!readOnly && (campaign?.promo_label ?? hint?.promo_label) && (
+                <span className="inline-flex rounded-full bg-gradient-to-r from-[#ff3b30] to-[#ff7a00] px-3 py-1 text-[14px] font-bold text-white shadow-sm">
+                  {campaign?.promo_label ?? hint?.promo_label}
+                </span>
+              )}
               <div className="flex items-start justify-between gap-3">
                 <h1 className="flex-1 text-[26px] font-bold leading-tight text-[var(--foreground)]">
                   {cleanCampaignText(displayName)}
@@ -569,6 +593,7 @@ export default function CampaignDetailClient({ salesChannel }: { salesChannel?: 
                             <div className="text-[18px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
                               ${Number(it.unit_price).toLocaleString()}
                             </div>
+                            <OriginalPrice item={it} />
                             {it.ordered_qty > 0 && (
                               <div className="inline-flex items-baseline gap-1 text-[12px] font-medium text-[var(--secondary-label)]">
                                 已售出
@@ -833,6 +858,98 @@ function HeroCarousel({ images }: { images: string[] }) {
   );
 }
 
+/**
+ * 圖片右下角的「影片介紹」小框 + 點開後的播放視窗。
+ *
+ * - 點了才載入影片（iframe 只在視窗開著時存在）：不點不耗流量，關掉就停止播放。
+ * - 只嵌 parseVideoEmbed 認得的四個網站；認不得的連結（例如 TikTok 短連結、抖音）
+ *   小框照樣出現，點了改成直接開那個連結。
+ * - IG / TikTok 的嵌入在某些手機上會要求登入或只給預覽圖，所以視窗下面一定留一顆
+ *   「到 ○○ 開啟」—— 嵌入不給播的時候客人還有路走。
+ */
+function VideoIntroButton({ url, campaignId }: { url: string | null; campaignId: number }) {
+  const [open, setOpen] = useState(false);
+  const link = safeHttpsUrl(url);
+  const embed = useMemo(() => parseVideoEmbed(link), [link]);
+
+  // 視窗開著時鎖住背景捲動
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, [open]);
+
+  if (!link) return null;
+
+  const pill = "absolute bottom-3 right-3 z-10 flex items-center gap-1.5 rounded-2xl bg-black/70 py-1.5 pl-1.5 pr-3 text-[14px] font-semibold text-white shadow-lg backdrop-blur active:scale-95";
+  const icon = (
+    <span className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-[#ff3b30] to-[#ff7a00]" aria-hidden>
+      <svg viewBox="0 0 24 24" fill="currentColor" className="ml-0.5 h-4 w-4"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5Z" /></svg>
+    </span>
+  );
+
+  if (!embed) {
+    return (
+      <a href={link} target="_blank" rel="noopener noreferrer" className={pill}>
+        {icon}
+        影片介紹
+      </a>
+    );
+  }
+
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)} className={pill} aria-label="看影片介紹">
+        {icon}
+        影片介紹
+      </button>
+      <Portal enabled={open}>
+        <div
+          className="fixed inset-0 z-[70] flex flex-col items-center justify-center gap-3 bg-black/90 px-4"
+          onClick={() => setOpen(false)}
+        >
+          <button
+            type="button"
+            aria-label="關閉"
+            onClick={() => setOpen(false)}
+            className="absolute right-4 flex h-9 w-9 items-center justify-center rounded-full bg-white/15 text-[20px] text-white backdrop-blur"
+            style={{ top: "calc(env(safe-area-inset-top) + 12px)" }}
+          >
+            ✕
+          </button>
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="overflow-hidden rounded-2xl bg-black shadow-2xl"
+            style={embed.portrait
+              ? { height: "min(74vh, 640px)", aspectRatio: "9 / 16", maxWidth: "92vw" }
+              : { width: "min(92vw, 720px)", aspectRatio: "16 / 9" }}
+          >
+            <iframe
+              key={`${campaignId}-${embed.embedUrl}`}
+              src={embed.embedUrl}
+              title="影片介紹"
+              className="h-full w-full border-0"
+              allow="autoplay; encrypted-media; fullscreen; picture-in-picture; web-share"
+              allowFullScreen
+              referrerPolicy="strict-origin-when-cross-origin"
+            />
+          </div>
+          <a
+            href={link}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="rounded-full bg-white/15 px-4 py-2 text-[14px] font-medium text-white backdrop-blur active:opacity-70"
+          >
+            播不出來？到 {embed.label} 開啟
+          </a>
+        </div>
+      </Portal>
+    </>
+  );
+}
+
 /** 詳情 API 還沒回來時的 SKU 列 skeleton, 給 hint 預填用 */
 function ItemSkeleton({ priceText }: { priceText: string | null }) {
   return (
@@ -981,8 +1098,11 @@ function ColorSizePicker({
         <div className="flex items-center justify-between gap-3 rounded-2xl bg-zinc-50 p-3">
           <div className="min-w-0">
             <div className="text-[15px] font-semibold text-[var(--foreground)]">{selected.color} {selected.size}</div>
-            <div className="mt-1 text-[20px] font-bold text-[var(--brand-strong)]">
-              ${Number(selected.unit_price).toLocaleString()}
+            <div className="mt-1 flex items-baseline gap-2">
+              <span className="text-[20px] font-bold text-[var(--brand-strong)]">
+                ${Number(selected.unit_price).toLocaleString()}
+              </span>
+              <OriginalPrice item={selected} className="text-[14px]" />
             </div>
             {selectedRemaining !== null && (
               <div className={`mt-1 text-[12px] font-semibold ${selectedRemaining > 0 ? "text-[#c4271d]" : "text-zinc-500"}`}>
@@ -1104,6 +1224,7 @@ function BuySheet({
                         <div className="text-[18px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
                           ${Number(it.unit_price).toLocaleString()}
                         </div>
+                        <OriginalPrice item={it} />
                         {it.ordered_qty > 0 && (
                           <div className="inline-flex items-baseline gap-1 text-[12px] font-medium text-[var(--secondary-label)]">
                             已售出

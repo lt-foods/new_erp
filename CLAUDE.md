@@ -1214,6 +1214,28 @@ LINE 會**依網址快取預覽**，改完 og tag 後舊訊息裡的卡片不會
 curl -sS <url> | grep -o '<meta property="og[^>]*>'
 ```
 
+### 商城的原價劃線／優惠標籤／影片介紹（20261122000000）
+
+三欄各在不同地方：`skus.original_price`（商品頁每個規格填）、`group_buy_campaigns.promo_label`
+（編輯開團，≤ 6 字）、`products.intro_video_url`（商品頁貼連結）。線上零售價＝團購價，
+所以「原價」不能用零售價代替，一定是另外填的那一欄。
+
+- **原價要比該團單價高才顯示**，判準只有一處：liff-api 的 `effectiveOriginalPrice`
+  （列表卡片與商品頁共用）。不要在前端另外寫一份，會出現卡片有劃、點進去沒劃。
+- **這三欄的讀寫都不併進既有的查詢／RPC**：liff-api 與後台都是「另外一句、失敗就當沒有」，
+  寫入走 `rpc_set_sku_original_price` / `rpc_set_campaign_promo_label` / `rpc_set_product_intro_video`。
+  併進 `listActiveCampaigns` 的主查詢，SQL 沒套時整個商城列表會 500；
+  併進 `rpc_upsert_*` 等於重寫那幾支整欄覆寫的 RPC（見「開團」那一節）。
+- **影片只嵌四個網站**（IG / TikTok / YouTube / Facebook），iframe 的 src 一律由
+  `videoEmbed.ts` 的 `parseVideoEmbed` 組出來，**不可以把資料庫裡的網址直接塞進 iframe**。
+  認不得的連結（抖音、其他網站）小框照樣出現，點了改成開那個連結。
+- `videoEmbed.ts` 在 `apps/member/src/lib/` 與 `apps/admin/src/lib/` 各一份、必須逐字相同
+  （兩個 app 沒有共用套件）。改完跑 `node --test apps/admin/src/lib/videoEmbed.test.mjs`，它會比對兩份。
+- TikTok App 複製的是短連結（`vt.tiktok.com/…`），裡面沒有影片代號、嵌不了。後台存檔前用
+  TikTok 的 oEmbed（有 CORS）換成 `https://www.tiktok.com/player/v1/<代號>` 再存。
+- IG / TikTok 的嵌入在部分手機會要求登入或只給預覽，所以播放視窗底下一定留「到 ○○ 開啟」。
+  影片一定要是公開的；這一段只能在真手機上驗（機房 IP 打 IG 的 embed 一律被導去登入頁）。
+
 ---
 
 ## 前端建置（apps/admin, apps/member）

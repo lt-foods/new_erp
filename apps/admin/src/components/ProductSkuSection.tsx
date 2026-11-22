@@ -21,6 +21,9 @@ type Sku = {
 type PriceScope = "retail" | "cost" | "branch";
 type PriceRow = { sku_id: number; price: number; scope: PriceScope; effective_from: string };
 type PriceMap = { retail?: number; cost?: number; branch?: number };
+// 原價（skus.original_price，20261122000000）：會員商城在它比售價高時畫刪除線。
+// 不是 prices 表的一種 scope —— 它不參與任何計價，只是給客人看的對照價。
+type OriginalMap = Record<number, number>;
 
 type Draft = {
   id: number | null;
@@ -30,6 +33,7 @@ type Draft = {
   retail_price: string;
   cost_price: string;
   branch_price: string;
+  original_price: string;
 };
 
 type PendingSku = Draft & { tempId: number };
@@ -42,7 +46,25 @@ const EMPTY_DRAFT: Draft = {
   retail_price: "",
   cost_price: "",
   branch_price: "",
+  original_price: "",
 };
+
+// 寫原價。空白＝清掉；跟現值一樣就不打。existing 沒給（新規格）而且沒填 → 不用清，直接跳過。
+async function writeOriginalPrice(skuId: number, value: string, existing?: number | null) {
+  const trimmed = value.trim();
+  let next: number | null = null;
+  if (trimmed !== "") {
+    next = Number(trimmed);
+    if (!Number.isFinite(next) || next <= 0) throw new Error("原價必須是大於 0 的數字（不需要就留空）");
+  }
+  if (next === null && existing == null) return;
+  if (next !== null && existing === next) return;
+  const { error } = await getSupabase().rpc("rpc_set_sku_original_price", {
+    p_sku_id: skuId,
+    p_price: next,
+  });
+  if (error) throw error;
+}
 
 // 寫 retail / cost / branch 三種價格。空字串跳過、與 existing 同值跳過、
 // 角色不允許的 scope 也跳過（若角色看不到，DraftCard 該欄位本來就不渲染、永遠空字串）。
@@ -99,6 +121,7 @@ export function ProductSkuSection({
 
   const [skus, setSkus] = useState<Sku[] | null>(isPending ? [] : null);
   const [prices, setPrices] = useState<Record<number, PriceMap>>({});
+  const [originals, setOriginals] = useState<OriginalMap>({});
   const [pending, setPending] = useState<PendingSku[]>([]);
   const [editingTempId, setEditingTempId] = useState<number | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -138,8 +161,22 @@ export function ProductSkuSection({
         if (slot[row.scope] === undefined) slot[row.scope] = Number(row.price);
       }
       setPrices(map);
+      // 原價另外讀、讀不到就當沒有：欄位是 20261122000000 才加的，
+      // 併進上面那句 select 的話，SQL 還沒套時整個規格清單會跟著讀不出來。
+      const { data: origRows, error: origErr } = await sb
+        .from("skus")
+        .select("id, original_price")
+        .in("id", ids);
+      const orig: OriginalMap = {};
+      if (!origErr) {
+        for (const row of (origRows ?? []) as { id: number; original_price: number | string | null }[]) {
+          if (row.original_price != null) orig[row.id] = Number(row.original_price);
+        }
+      }
+      setOriginals(orig);
     } else {
       setPrices({});
+      setOriginals({});
     }
   }, [productId]);
 
@@ -181,6 +218,7 @@ export function ProductSkuSection({
           });
           if (rpcErr) throw rpcErr;
           await writePrices(skuId as number, p, role);
+          await writeOriginalPrice(skuId as number, p.original_price);
         }
         setPending([]);
       },
@@ -236,6 +274,7 @@ export function ProductSkuSection({
       retail_price: p.retail !== undefined ? String(p.retail) : "",
       cost_price: p.cost !== undefined ? String(p.cost) : "",
       branch_price: p.branch !== undefined ? String(p.branch) : "",
+      original_price: originals[sku.id] !== undefined ? String(originals[sku.id]) : "",
     });
     setEditingTempId(null);
   }
@@ -249,6 +288,7 @@ export function ProductSkuSection({
       retail_price: p.retail_price,
       cost_price: p.cost_price,
       branch_price: p.branch_price,
+      original_price: p.original_price,
     });
     setEditingTempId(p.tempId);
   }
@@ -310,6 +350,7 @@ export function ProductSkuSection({
 
       const existing = (skuId as number) in prices ? prices[skuId as number] : {};
       await writePrices(skuId as number, draft, role, existing);
+      await writeOriginalPrice(skuId as number, draft.original_price, originals[skuId as number] ?? null);
 
       cancelEdit();
       await refresh();
@@ -391,6 +432,7 @@ export function ProductSkuSection({
               key={s.id}
               sku={s}
               priceMap={prices[s.id] ?? {}}
+              originalPrice={originals[s.id]}
               showCost={showCost}
               showBranch={showBranch}
               onEdit={() => startEditExisting(s)}
@@ -456,6 +498,7 @@ export function ProductSkuSection({
 function SkuCard({
   sku,
   priceMap,
+  originalPrice,
   showCost,
   showBranch,
   onEdit,
@@ -463,6 +506,7 @@ function SkuCard({
 }: {
   sku: Sku;
   priceMap: PriceMap;
+  originalPrice?: number;
   showCost: boolean;
   showBranch: boolean;
   onEdit: () => void;
@@ -484,6 +528,11 @@ function SkuCard({
           {priceMap.retail !== undefined && (
             <span className="rounded bg-emerald-100 px-1.5 py-0.5 font-bold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
               零售 ${priceMap.retail}
+            </span>
+          )}
+          {originalPrice !== undefined && (
+            <span className="rounded bg-zinc-100 px-1.5 py-0.5 font-bold text-zinc-600 line-through dark:bg-zinc-800 dark:text-zinc-300">
+              原價 ${originalPrice}
             </span>
           )}
           {showBranch && priceMap.branch !== undefined && (
@@ -548,6 +597,11 @@ function PendingCard({
           {p.retail_price && (
             <span className="rounded bg-emerald-100 px-1.5 py-0.5 font-bold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
               零售 ${p.retail_price}
+            </span>
+          )}
+          {p.original_price && (
+            <span className="rounded bg-zinc-100 px-1.5 py-0.5 font-bold text-zinc-600 line-through dark:bg-zinc-800 dark:text-zinc-300">
+              原價 ${p.original_price}
             </span>
           )}
           {showBranch && p.branch_price && (
@@ -640,6 +694,18 @@ function DraftCard({
             className={inputClass}
           />
         </Field>
+        <Field label="原價（選填）">
+          <input
+            type="number"
+            step="1"
+            min="1"
+            value={draft.original_price}
+            onChange={(e) => set("original_price", e.target.value)}
+            placeholder="$（會員商城劃掉的那個價錢）"
+            className={inputClass}
+          />
+          <OriginalPriceHint original={draft.original_price} retail={draft.retail_price} />
+        </Field>
         {showBranch && (
           <Field label="分店價">
             <input
@@ -684,6 +750,34 @@ function DraftCard({
         </SpinButton>
       </div>
     </div>
+  );
+}
+
+// 原價要比售價高，會員商城才會劃掉它 —— 填了卻不會出現時要當場講，不要讓人存完去商城找不到。
+function OriginalPriceHint({ original, retail }: { original: string; retail: string }) {
+  const o = Number(original);
+  const r = Number(retail);
+  if (original.trim() === "") {
+    return (
+      <span className="block text-[11px] text-zinc-500">
+        有填、而且比售價高，會員商城才會顯示成「<s>原價</s> 售價」。留空＝不顯示。
+      </span>
+    );
+  }
+  if (!Number.isFinite(o) || o <= 0) {
+    return <span className="block text-[11px] text-red-600">原價要是大於 0 的數字。</span>;
+  }
+  if (retail.trim() !== "" && Number.isFinite(r) && o <= r) {
+    return (
+      <span className="block text-[11px] text-amber-700 dark:text-amber-400">
+        原價（${o}）沒有比零售價（${r}）高，商城不會顯示劃線。
+      </span>
+    );
+  }
+  return (
+    <span className="block text-[11px] text-emerald-700 dark:text-emerald-400">
+      商城會顯示：<s>${o}</s>{retail.trim() !== "" ? ` $${r}` : ""}
+    </span>
   );
 }
 

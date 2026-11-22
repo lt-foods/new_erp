@@ -959,6 +959,63 @@ async function getSpotProduct(
   });
 }
 
+/**
+ * 原價要「比這團的單價高」才算數；贈品（單價 0）與沒填的一律 null。
+ * 寫在一處：列表卡片與商品頁要用同一個判準，不然會出現卡片有劃、點進去沒劃。
+ */
+function effectiveOriginalPrice(unitPrice: unknown, originalPrice: unknown): number | null {
+  const unit = Number(unitPrice);
+  const orig = Number(originalPrice);
+  if (originalPrice == null || !Number.isFinite(unit) || !Number.isFinite(orig)) return null;
+  return unit > 0 && orig > unit ? orig : null;
+}
+
+/**
+ * 商城的促銷欄位（20261122000000）：優惠標籤 + 卡片那個最低價的原價。
+ *
+ * **另外一句查、失敗就當沒有** —— 不併進 listActiveCampaigns 的主查詢：
+ * 那句已經帶著兩層「欄位還沒建就退舊查法」，再加一欄，migration 沒套的時候
+ * 整個商城列表會跟著 500。這裡出錯只是少了劃線與標籤，列表照常。
+ * 用 id 分批（一批 100）避免網址過長。
+ */
+async function loadCampaignPromo(
+  sb: any,
+  tenantId: string,
+  campaignIds: number[],
+): Promise<Map<number, { label: string | null; minPriceOriginal: number | null }>> {
+  const out = new Map<number, { label: string | null; minPriceOriginal: number | null }>();
+  const chunks: number[][] = [];
+  for (let i = 0; i < campaignIds.length; i += 100) chunks.push(campaignIds.slice(i, i + 100));
+  const results = await Promise.all(chunks.map((chunk) =>
+    sb
+      .from("group_buy_campaigns")
+      .select("id, promo_label, campaign_items(unit_price, sku:skus(original_price))")
+      .eq("tenant_id", tenantId)
+      .in("id", chunk)
+  ));
+  for (const { data, error } of results) {
+    if (error) {
+      console.error("[campaign_promo] query failed (migration 20261122000000 not applied?)", error.message);
+      continue;
+    }
+    for (const c of (data ?? []) as any[]) {
+      const items = (c.campaign_items ?? []) as any[];
+      const prices = items.map((it) => Number(it.unit_price)).filter((n) => Number.isFinite(n));
+      const min = prices.length > 0 ? Math.min(...prices) : null;
+      // 卡片印的是最低價，所以只看「賣最低價的那幾項」的原價；同價多項取最高的那個原價
+      let minPriceOriginal: number | null = null;
+      for (const it of items) {
+        if (min == null || Number(it.unit_price) !== min) continue;
+        const orig = effectiveOriginalPrice(it.unit_price, it.sku?.original_price);
+        if (orig != null && (minPriceOriginal == null || orig > minPriceOriginal)) minPriceOriginal = orig;
+      }
+      const label = typeof c.promo_label === "string" && c.promo_label.trim() ? c.promo_label.trim() : null;
+      out.set(Number(c.id), { label, minPriceOriginal });
+    }
+  }
+  return out;
+}
+
 async function listActiveCampaigns(
   sb: any,
   tenantId: string,
@@ -1065,12 +1122,15 @@ async function listActiveCampaigns(
 
   if (error) return json({ error: error.message }, 500);
 
+  const promoMap = await loadCampaignPromo(sb, tenantId, allIds);
+
   const supabaseUrl = requireEnv("SUPABASE_URL");
   const campaigns = sourceCampaigns.map((c: any) => {
     const items = c.campaign_items ?? [];
     const prices: number[] = items
       .map((i: any) => Number(i.unit_price))
       .filter((n: number) => Number.isFinite(n));
+    const promo = promoMap.get(Number(c.id));
 
     // 封面回退鏈:campaign.cover_image_url > 第一個 SKU 的第一張產品圖
     const sortedItems = [...items].sort(
@@ -1103,6 +1163,9 @@ async function listActiveCampaigns(
       item_count: prices.length,
       min_price: prices.length > 0 ? Math.min(...prices) : 0,
       max_price: prices.length > 0 ? Math.max(...prices) : 0,
+      // 卡片上那個價格（最低價那一項）的原價；沒有或不比售價高就是 null（不劃）
+      min_price_original: promo?.minPriceOriginal ?? null,
+      promo_label: promo?.label ?? null,
     };
   });
 
@@ -1233,6 +1296,39 @@ async function getCampaignDetail(sb: any, tenantId: string, campaignId: number, 
     itemOrderedMap.set(ciId, (itemOrderedMap.get(ciId) ?? 0) + q);
   }
 
+  // 促銷欄位（20261122000000）：優惠標籤、各規格原價、商品介紹影片。
+  // 另外查、失敗就當沒有（理由同 loadCampaignPromo：migration 沒套時商品頁不能跟著壞）。
+  const originalBySku = new Map<number, number>();
+  c.promo_label = null;
+  c.intro_video_url = null;
+  {
+    const { data: promoRow, error: promoErr } = await sb
+      .from("group_buy_campaigns")
+      .select("promo_label, campaign_items(sort_order, sku:skus(id, original_price, product:products(intro_video_url)))")
+      .eq("tenant_id", tenantId)
+      .eq("id", campaignId)
+      .maybeSingle();
+    if (promoErr) {
+      console.error("[get_campaign_detail] promo query failed (migration 20261122000000 not applied?)", promoErr.message);
+    } else if (promoRow) {
+      const label = typeof promoRow.promo_label === "string" ? promoRow.promo_label.trim() : "";
+      c.promo_label = label || null;
+      const promoItems = [...((promoRow.campaign_items ?? []) as any[])]
+        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+      for (const pi of promoItems) {
+        const skuId = Number(pi.sku?.id);
+        if (pi.sku?.original_price != null && Number.isFinite(skuId)) {
+          originalBySku.set(skuId, Number(pi.sku.original_price));
+        }
+        // 多商品的團：照品項順序拿第一支有影片的
+        const video = pi.sku?.product?.intro_video_url;
+        if (!c.intro_video_url && typeof video === "string" && /^https:\/\//.test(video.trim())) {
+          c.intro_video_url = video.trim();
+        }
+      }
+    }
+  }
+
   const supabaseUrl = requireEnv("SUPABASE_URL");
   c.cover_image_url = toPublicUrl(supabaseUrl, "products", c.cover_image_url);
 
@@ -1264,6 +1360,8 @@ async function getCampaignDetail(sb: any, tenantId: string, campaignId: number, 
       variant_name: it.sku?.variant_name ?? null,
       image_url: firstImg,
       unit_price: Number(it.unit_price),
+      // 原價（比單價高才有值）；畫面在單價旁邊畫刪除線
+      original_price: effectiveOriginalPrice(it.unit_price, originalBySku.get(Number(it.sku?.id))),
       cap_qty: it.cap_qty != null ? Number(it.cap_qty) : null,
       ordered_qty: itemOrderedMap.get(Number(it.id)) ?? 0,
     };
