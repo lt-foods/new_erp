@@ -282,29 +282,24 @@ export default function CampaignCard({
             </div>
           );
         })()}
-        {originalPrice !== null ? (
-          // 特價（老闆 2026-11-22 的樣稿）：已訂購／瀏覽數在左、特價數字在右（原價疊在售價上面）。
-          // flex-wrap：四位數的價格放不下時，特價數字自己掉到下一列靠右，不會把卡片撐破。
-          <div className="flex flex-wrap items-end justify-between gap-x-1 gap-y-1.5">
-            <div className="flex flex-col items-start gap-1 pb-0.5">
-              <OrderedCount count={campaign.ordered_qty} size="sm" />
-              <ViewCount count={campaign.view_count} />
-            </div>
-            <SalePrice price={campaign.min_price} original={originalPrice} suffix={priceSuffix} size="md" className="ml-auto" />
+        {/* 價格一律在右、已訂購／瀏覽數在左（老闆 2026-11-22：特價的樣稿是這樣排，
+            「沒特價的金額位置也放右邊」—— 有沒有特價都同一個位置，整排卡片才對得齊）。
+            已訂購／瀏覽數直向堆疊：卡片是兩欄格線，跟倒數同一列會擠爆（倒數字串長達「14 天 23:19:10」）。
+            flex-wrap：四位數的價格放不下時，價格自己掉到下一列靠右，不會把卡片撐破。 */}
+        <div className="flex flex-wrap items-end justify-between gap-x-1 gap-y-1.5">
+          <div className="flex flex-col items-start gap-1 pb-0.5">
+            <OrderedCount count={campaign.ordered_qty} size="sm" />
+            <ViewCount count={campaign.view_count} />
           </div>
-        ) : (
-          <div className="flex items-baseline justify-between gap-2">
-            <div className="brand-gradient-text text-[24px] font-extrabold tabular-nums leading-none">
+          {originalPrice !== null ? (
+            // 特價：原價疊在售價上面（老闆 2026-11-22 的樣稿）
+            <SalePrice price={campaign.min_price} original={originalPrice} suffix={priceSuffix} size="md" className="ml-auto" />
+          ) : (
+            <div className="brand-gradient-text ml-auto whitespace-nowrap text-[24px] font-extrabold tabular-nums leading-none">
               {priceText}
             </div>
-            {/* 已訂購 / 瀏覽數直向堆疊在價格右邊 —— 卡片是兩欄格線，
-                跟倒數同一列會擠爆（倒數字串長達「14 天 23:19:10」）。 */}
-            <div className="flex shrink-0 flex-col items-end gap-1">
-              <OrderedCount count={campaign.ordered_qty} size="sm" />
-              <ViewCount count={campaign.view_count} />
-            </div>
-          </div>
-        )}
+          )}
+        </div>
         {campaign.end_at && (
           <div className="inline-flex items-center gap-1 rounded-md bg-[var(--brand-soft)] px-1.5 py-0.5 text-[12px] font-semibold tabular-nums text-[var(--brand-strong)]">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} className="h-3 w-3 shrink-0">
