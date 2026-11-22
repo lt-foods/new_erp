@@ -986,13 +986,15 @@ async function loadCampaignPromo(
   const out = new Map<number, { label: string | null; minPriceOriginal: number | null }>();
   const chunks: number[][] = [];
   for (let i = 0; i < campaignIds.length; i += 100) chunks.push(campaignIds.slice(i, i + 100));
-  const results = await Promise.all(chunks.map((chunk) =>
+  // 連線層級的例外也吞掉（回空的）：這個 promise 是先丟出去、晚點才 await 的，
+  // 不能讓它變成沒人接的 rejection，更不能讓列表因為它而失敗。
+  const results: { data: any; error: any }[] = await Promise.all(chunks.map((chunk) =>
     sb
       .from("group_buy_campaigns")
       .select("id, promo_label, campaign_items(unit_price, sku:skus(original_price))")
       .eq("tenant_id", tenantId)
       .in("id", chunk)
-  ));
+  )).catch((e) => [{ data: null, error: { message: String(e?.message ?? e) } }]);
   for (const { data, error } of results) {
     if (error) {
       console.error("[campaign_promo] query failed (migration 20261122000000 not applied?)", error.message);
@@ -1075,6 +1077,9 @@ async function listActiveCampaigns(
 
   const allIds = sourceCampaigns.map((c: any) => c.id);
 
+  // 促銷欄位先丟出去跑、下面要用時才等：跟瀏覽數／已訂購那兩支平行，不多花時間
+  const promoPromise = loadCampaignPromo(sb, tenantId, allIds);
+
   // 瀏覽次數（顧客端顯示「N 次瀏覽」）。RPC 未部署時整段當 0，不影響列表。
   const viewMap = new Map<number, number>();
   if (allIds.length > 0) {
@@ -1122,7 +1127,7 @@ async function listActiveCampaigns(
 
   if (error) return json({ error: error.message }, 500);
 
-  const promoMap = await loadCampaignPromo(sb, tenantId, allIds);
+  const promoMap = await promoPromise;
 
   const supabaseUrl = requireEnv("SUPABASE_URL");
   const campaigns = sourceCampaigns.map((c: any) => {
@@ -1239,6 +1244,17 @@ async function getCampaignDetail(sb: any, tenantId: string, campaignId: number, 
   }
   c.available = available;
 
+  // 促銷欄位（20261122000000）先丟出去跑，跟下面幾句平行；用的時候才等（見下方「促銷欄位」那一段）。
+  // 連線層級的例外也吞成 error：不能變成沒人接的 rejection，更不能讓商品頁因為它而失敗。
+  const promoRowPromise: Promise<{ data: any; error: any }> = Promise.resolve(
+    sb
+      .from("group_buy_campaigns")
+      .select("promo_label, campaign_items(sort_order, sku:skus(id, original_price, product:products(intro_video_url)))")
+      .eq("tenant_id", tenantId)
+      .eq("id", campaignId)
+      .maybeSingle(),
+  ).catch((e) => ({ data: null, error: { message: String(e?.message ?? e) } }));
+
   const { data: items, error: iErr } = await sb
     .from("campaign_items")
     .select("id, unit_price, cap_qty, sort_order, sku:skus(id, sku_code, product_name, variant_name, product:products(name, images))")
@@ -1302,12 +1318,7 @@ async function getCampaignDetail(sb: any, tenantId: string, campaignId: number, 
   c.promo_label = null;
   c.intro_video_url = null;
   {
-    const { data: promoRow, error: promoErr } = await sb
-      .from("group_buy_campaigns")
-      .select("promo_label, campaign_items(sort_order, sku:skus(id, original_price, product:products(intro_video_url)))")
-      .eq("tenant_id", tenantId)
-      .eq("id", campaignId)
-      .maybeSingle();
+    const { data: promoRow, error: promoErr } = await promoRowPromise;
     if (promoErr) {
       console.error("[get_campaign_detail] promo query failed (migration 20261122000000 not applied?)", promoErr.message);
     } else if (promoRow) {
