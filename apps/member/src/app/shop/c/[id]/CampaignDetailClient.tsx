@@ -21,7 +21,6 @@ import { detectClientChannel } from "@/lib/clientChannel";
 import { backOrPush } from "@/lib/navBack";
 import LineBindGate from "@/components/LineBindGate";
 import VideoIntro from "@/components/VideoIntro";
-import SalePriceTag from "@/components/SalePriceTag";
 
 /**
  * liff-api 載入團購失敗時給客人看的文案。
@@ -111,17 +110,15 @@ type Item = {
   ordered_qty: number;
 };
 
-/** 這一項有沒有要劃掉的原價（後端只在原價比售價高時回，這裡再擋一次）。 */
-function itemOnSale(item: Item): boolean {
-  return Number(item.original_price ?? 0) > Number(item.unit_price);
-}
-
-/** 規格的價格：有原價 → 黃底特價牌（原價劃掉＋紅字售價）；沒有 → 原本的品牌色價格。 */
-function ItemPrice({ item, plainClassName }: { item: Item; plainClassName: string }) {
-  if (itemOnSale(item)) {
-    return <SalePriceTag price={Number(item.unit_price)} original={Number(item.original_price)} size="sm" />;
-  }
-  return <div className={plainClassName}>${Number(item.unit_price).toLocaleString()}</div>;
+/** 售價旁邊那個劃掉的原價。沒有原價就什麼都不畫。 */
+function OriginalPrice({ item, className = "text-[13px]" }: { item: Item; className?: string }) {
+  const orig = Number(item.original_price ?? 0);
+  if (!(orig > Number(item.unit_price))) return null;
+  return (
+    <span className={`tabular-nums leading-none text-[var(--secondary-label)] line-through ${className}`}>
+      ${orig.toLocaleString()}
+    </span>
+  );
 }
 
 function itemRemaining(item: Item): number | null {
@@ -597,8 +594,11 @@ export default function CampaignDetailClient({ salesChannel }: { salesChannel?: 
                             name={it.product_name ?? `品項#${it.sku_id}`}
                             variant={it.variant_name}
                           />
-                          <div className={`mt-1 flex gap-2 ${itemOnSale(it) ? "items-center gap-3" : "items-baseline"}`}>
-                            <ItemPrice item={it} plainClassName="text-[18px] font-bold tabular-nums text-[var(--brand-strong)] leading-none" />
+                          <div className="mt-1 flex items-baseline gap-2">
+                            <div className="text-[18px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
+                              ${Number(it.unit_price).toLocaleString()}
+                            </div>
+                            <OriginalPrice item={it} />
                             {it.ordered_qty > 0 && (
                               <div className="inline-flex items-baseline gap-1 text-[12px] font-medium text-[var(--secondary-label)]">
                                 已售出
@@ -1011,8 +1011,11 @@ function ColorSizePicker({
         <div className="flex items-center justify-between gap-3 rounded-2xl bg-zinc-50 p-3">
           <div className="min-w-0">
             <div className="text-[15px] font-semibold text-[var(--foreground)]">{selected.color} {selected.size}</div>
-            <div className="mt-1.5">
-              <ItemPrice item={selected} plainClassName="text-[20px] font-bold text-[var(--brand-strong)]" />
+            <div className="mt-1 flex items-baseline gap-2">
+              <span className="text-[20px] font-bold text-[var(--brand-strong)]">
+                ${Number(selected.unit_price).toLocaleString()}
+              </span>
+              <OriginalPrice item={selected} className="text-[14px]" />
             </div>
             {selectedRemaining !== null && (
               <div className={`mt-1 text-[12px] font-semibold ${selectedRemaining > 0 ? "text-[#c4271d]" : "text-zinc-500"}`}>
@@ -1130,8 +1133,11 @@ function BuySheet({
                         name={it.product_name ?? `品項#${it.sku_id}`}
                         variant={it.variant_name}
                       />
-                      <div className={`mt-1 flex gap-2 ${itemOnSale(it) ? "items-center gap-3" : "items-baseline"}`}>
-                        <ItemPrice item={it} plainClassName="text-[18px] font-bold tabular-nums text-[var(--brand-strong)] leading-none" />
+                      <div className="mt-1 flex items-baseline gap-2">
+                        <div className="text-[18px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
+                          ${Number(it.unit_price).toLocaleString()}
+                        </div>
+                        <OriginalPrice item={it} />
                         {it.ordered_qty > 0 && (
                           <div className="inline-flex items-baseline gap-1 text-[12px] font-medium text-[var(--secondary-label)]">
                             已售出
