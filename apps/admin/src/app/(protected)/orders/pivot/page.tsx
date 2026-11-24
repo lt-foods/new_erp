@@ -91,14 +91,22 @@ function fmtDateInput(d: Date): string {
   return `${y}-${m}-${dd}`;
 }
 
-// 預設: 當月 1 日 ~ 當月最後一日（想看更多天使用者自己拉）
+// 加減 n 個月，月底夾住不溢位（3/31 往前一個月 = 2/28 或閏年 2/29）
+function shiftMonthsClamped(d: Date, n: number): Date {
+  const total = d.getFullYear() * 12 + d.getMonth() + n;
+  const y = Math.floor(total / 12);
+  const m = total % 12;
+  const lastDay = new Date(y, m + 1, 0).getDate();
+  return new Date(y, m, Math.min(d.getDate(), lastDay));
+}
+
+// 預設: 一個月前的今天 ~ 一個月後的今天（想看更多天使用者自己拉）。
+// to 往後：預設分組「依團」篩的是團的結單日，還在開、之後才結單的團要看得到。
 function defaultDateRange(): { from: string; to: string } {
   const today = new Date();
-  const y = today.getFullYear();
-  const m = today.getMonth();
   return {
-    from: fmtDateInput(new Date(y, m, 1)),
-    to: fmtDateInput(new Date(y, m + 1, 0)), // 下個月的第 0 天 = 本月最後一天
+    from: fmtDateInput(shiftMonthsClamped(today, -1)),
+    to: fmtDateInput(shiftMonthsClamped(today, 1)),
   };
 }
 
@@ -223,8 +231,6 @@ function PivotContent() {
         const saved = JSON.parse(raw) as Partial<{
           campaignIds: string[];
           viewBy: ViewBy;
-          dateFrom: string;
-          dateTo: string;
           status: OrderStatus[];
           storeId: string;
           metric: Metric;
@@ -237,14 +243,8 @@ function PivotContent() {
           const v = normalizeViewBy(saved.viewBy);
           if (v) setViewBy(v);
         }
-        if (!searchParams.get("from")) {
-          const m = normalizeDate(saved.dateFrom, "start");
-          if (m) setDateFrom(m);
-        }
-        if (!searchParams.get("to")) {
-          const m = normalizeDate(saved.dateTo, "end");
-          if (m) setDateTo(m);
-        }
+        // 日期刻意不從 localStorage 還原：避免有人拉過長範圍後，每次打開都撈很多資料拖慢頁面。
+        // 網址 from/to 仍優先（見上方初始 state）。
         if (Array.isArray(saved.status) && saved.status.length > 0) {
           setStatusSet(new Set(saved.status));
         }
@@ -723,7 +723,7 @@ function PivotContent() {
           <option value="campaign">分組：開團（收單期間）</option>
         </select>
 
-        {/* Date range — 以日為單位、可跨多月；預設當月 1 日 ~ 當月最後一日 */}
+        {/* Date range — 以日為單位、可跨多月；預設一個月前的今天 ~ 一個月後的今天 */}
         <div
           className="flex items-center gap-1 rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800"
           title={
