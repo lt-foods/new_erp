@@ -6,8 +6,9 @@
 -- 老闆原話：「我要連店家都不能自行加單 只要非龍潭的帳號通通都不準加有限量的表單」；
 --   11/27 定案：「沒超過上線就不用擋……如果是還沒有超過上限加單是可以的、3擋」。
 --   ⇒ 分店帳號＝JWT app_metadata.role 為 store_manager 或 store_staff；其他角色照舊不限。
---   ⇒ 限量團＝整團 total_cap_qty 有設，或任一 campaign_items.cap_qty 有設
---      （同 _campaign_cap_remaining 的判斷：COALESCE(cap, 0) > 0）。
+--   ⇒ 限量團（改大數量、復原用）＝close_type='limited'，或整團 total_cap_qty／任一 campaign_items.cap_qty
+--      有設（上限的判斷同 _campaign_cap_remaining：COALESCE(cap, 0) > 0）。
+--      店長叫貨的上限計算照 _campaign_cap_remaining：沒設上限的團算不出剩餘量，不擋。
 --
 -- 問題：店長叫貨 rpc_create_store_internal_order 完全不看上限，限量團被分店叫貨加超過
 --   （上限 90 的團變 92）。店長改大數量、復原已取消的單也都不看上限。
@@ -15,7 +16,7 @@
 -- 做法（每支都以「最後一支真的重建它的定義」逐字為底，只加下面標「20261127」的段落）：
 --   1. 新增 _caller_is_store_role()：呼叫者是不是分店角色（讀 app_metadata.role，寫法同
 --      _pr_qty_sync_assert_perm 20261001000000:182）。
---   2. 新增 _campaign_is_limited(p_campaign_id)：這團有沒有設上限。
+--   2. 新增 _campaign_is_limited(p_campaign_id)：close_type='limited'，或整團／任一口味有設上限。
 --      兩支都只給內部用：REVOKE PUBLIC、anon、authenticated（只在 SECURITY DEFINER 函式裡呼叫）。
 --   3. rpc_create_store_internal_order —— 基底 20261013000000_transfer_always_new_order.sql:2228 逐字。
 --      只加：DECLARE 三個變數；「p_items 不可空」之後一段：分店帳號 → 鎖團（FOR UPDATE）→
@@ -51,7 +52,7 @@
 --   _campaign_cap_remaining          17b0aa2bf45fe6096b6765d50fb0f01a  （不改，必須是這版）
 --   _check_order_edit_qty_perm       5e4918e48712618b46d48c0a5a2d7a40  （不改，必須是這版）
 --   _caller_is_store_role            （新函式：不存在，或本檔版 1824d9dbea825a795fb6b6ab5b5435fa）
---   _campaign_is_limited             （新函式：不存在，或本檔版 af03d9c55b1007f47e56156f909222c6）
+--   _campaign_is_limited             （新函式：不存在，或本檔版 af3022d235a3f0feb12ed0821dc3a0da）
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -77,6 +78,9 @@ BEGIN
   PERFORM 1 FROM information_schema.columns
    WHERE table_schema = 'public' AND table_name = 'campaign_items' AND column_name = 'cap_qty';
   IF NOT FOUND THEN v_bad := v_bad || '找不到欄位 campaign_items.cap_qty'::TEXT; END IF;
+  PERFORM 1 FROM information_schema.columns
+   WHERE table_schema = 'public' AND table_name = 'group_buy_campaigns' AND column_name = 'close_type';
+  IF NOT FOUND THEN v_bad := v_bad || '找不到欄位 group_buy_campaigns.close_type'::TEXT; END IF;
 
   FOR v_rec IN
     SELECT *
@@ -97,7 +101,7 @@ BEGIN
         ('public._caller_is_store_role()', FALSE,
          '1824d9dbea825a795fb6b6ab5b5435fa', '1824d9dbea825a795fb6b6ab5b5435fa'),
         ('public._campaign_is_limited(bigint)', FALSE,
-         'af03d9c55b1007f47e56156f909222c6', 'af03d9c55b1007f47e56156f909222c6')
+         'af3022d235a3f0feb12ed0821dc3a0da', 'af3022d235a3f0feb12ed0821dc3a0da')
       ) AS t(sig, must_exist, md5_base, md5_new)
   LOOP
     v_oid := to_regprocedure(v_rec.sig);
@@ -148,19 +152,21 @@ COMMENT ON FUNCTION public._caller_is_store_role() IS
 
 
 -- ----------------------------------------------------------------------------
--- 2. _campaign_is_limited(p_campaign_id) —— 這團有沒有設上限（整團或任一口味）
+-- 2. _campaign_is_limited(p_campaign_id) —— 是不是限量團（close_type='limited'，或整團／任一口味有設上限）
 -- ----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public._campaign_is_limited(p_campaign_id BIGINT)
 RETURNS BOOLEAN
 LANGUAGE sql STABLE SECURITY DEFINER
 SET search_path = public
 AS $$
-  -- 有沒有設上限的判斷同 _campaign_cap_remaining（20261028000000:156）：COALESCE(cap, 0) > 0
+  -- 限量團＝close_type 是 limited，或整團／任一口味有設上限
+  --   （上限的判斷同 _campaign_cap_remaining（20261028000000:156）：COALESCE(cap, 0) > 0）
   SELECT EXISTS (
     SELECT 1
       FROM group_buy_campaigns gbc
      WHERE gbc.id = p_campaign_id
-       AND (COALESCE(gbc.total_cap_qty, 0) > 0
+       AND (gbc.close_type = 'limited'
+            OR COALESCE(gbc.total_cap_qty, 0) > 0
             OR EXISTS (SELECT 1
                          FROM campaign_items ci
                         WHERE ci.campaign_id = gbc.id
@@ -170,7 +176,7 @@ AS $$
 $$;
 REVOKE ALL ON FUNCTION public._campaign_is_limited(BIGINT) FROM PUBLIC, anon, authenticated;
 COMMENT ON FUNCTION public._campaign_is_limited(BIGINT) IS
-  '整團 total_cap_qty 或任一 campaign_items.cap_qty 有設（> 0）＝限量團。判斷同 _campaign_cap_remaining（20261127000000）。內部用。';
+  'close_type=limited，或整團 total_cap_qty／任一 campaign_items.cap_qty 有設（> 0）＝限量團。上限判斷同 _campaign_cap_remaining（20261127000000）。內部用。';
 
 
 -- ----------------------------------------------------------------------------

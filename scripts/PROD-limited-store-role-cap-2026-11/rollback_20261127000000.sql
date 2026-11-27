@@ -34,6 +34,9 @@ BEGIN
   PERFORM 1 FROM information_schema.columns
    WHERE table_schema = 'public' AND table_name = 'campaign_items' AND column_name = 'cap_qty';
   IF NOT FOUND THEN v_bad := v_bad || '找不到欄位 campaign_items.cap_qty'::TEXT; END IF;
+  PERFORM 1 FROM information_schema.columns
+   WHERE table_schema = 'public' AND table_name = 'group_buy_campaigns' AND column_name = 'close_type';
+  IF NOT FOUND THEN v_bad := v_bad || '找不到欄位 group_buy_campaigns.close_type'::TEXT; END IF;
 
   FOR v_rec IN
     SELECT *
