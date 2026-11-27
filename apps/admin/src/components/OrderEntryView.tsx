@@ -8,6 +8,7 @@ import SearchSpinner from "@/components/SearchSpinner";
 import { CampaignThumb } from "@/components/CampaignThumb";
 import { campaignCoverUrl, type CampaignCoverItem } from "@/lib/campaignCover";
 import { useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
+import { useRole } from "@/lib/role";
 
 type Campaign = {
   id: number;
@@ -15,6 +16,7 @@ type Campaign = {
   name: string;
   status: string;
   close_type: string | null;
+  total_cap_qty: number | null;
   pickup_deadline: string | null;
   cover_image_url: string | null;
   campaign_items: CampaignCoverItem[] | null;
@@ -202,6 +204,11 @@ export function OrderEntryView({
   const isClosedCampaign = campaign?.status === "closed";
   // 美食列車收單即截止，連店內現貨 / 抵減也擋。
   const isFoodTrainClosed = isClosedCampaign && campaign?.close_type === "food_train";
+  // 限量團（整團或任一口味有上限）＋分店帳號：叫貨會超過上限時後端會擋（20261127000000），這裡只先提示。
+  const role = useRole();
+  const isStoreRole = role === "store_manager" || role === "store_staff";
+  const isLimitedCampaign =
+    Number(campaign?.total_cap_qty ?? 0) > 0 || campaignSkus.some((s) => Number(s.cap_qty ?? 0) > 0);
 
   // 載入活動 / channels
   useEffect(() => {
@@ -211,7 +218,7 @@ export function OrderEntryView({
       const sb = getSupabase();
       const [cRes, chRes, stRes] = await Promise.all([
         sb.from("group_buy_campaigns")
-          .select("id, campaign_no, name, status, close_type, pickup_deadline, cover_image_url, campaign_items(sort_order, sku:skus(product:products(images)))")
+          .select("id, campaign_no, name, status, close_type, total_cap_qty, pickup_deadline, cover_image_url, campaign_items(sort_order, sku:skus(product:products(images)))")
           .eq("id", campaignId).maybeSingle(),
         sb.from("line_channels")
           .select("id, name, home_store_id").eq("is_active", true).order("name"),
@@ -676,6 +683,9 @@ export function OrderEntryView({
       ) : mode === "internal" ? (
         <p className="text-xs text-zinc-500">
           內部叫貨：客戶自動掛 <span className="font-medium text-zinc-700 dark:text-zinc-300">store_internal</span> 內部會員、訂單編號 <span className="font-mono">XXX-INT0001</span>。可改 unit_price（88 折出清）。
+          {isStoreRole && isLimitedCampaign && (
+            <span className="block text-amber-700 dark:text-amber-400">限量團超過上限時無法叫貨</span>
+          )}
         </p>
       ) : (
         <p className="text-xs text-red-700 dark:text-red-400">
